@@ -30,6 +30,9 @@
     "neo4j-driver": "^6.0.1",
     "zustand": "^5.0.13"
   },
+  "overrides": {
+    "tmp": ">=0.2.6"
+  },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
