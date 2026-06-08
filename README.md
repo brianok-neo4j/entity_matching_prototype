@@ -98,27 +98,26 @@ The tool assumes the graph was built with neo4j-graphrag-python and understands 
 ### Install
 
 ```bash
-cd app
-npm install
+cd app && npm install
 ```
 
 ### Development
 
 ```bash
-npm run dev
+cd app && npm run dev
 ```
 
 ### Build
 
 ```bash
 # macOS
-npm run build:mac
+cd app && npm run build:mac
 
 # Windows
-npm run build:win
+cd app && npm run build:win
 
 # Linux
-npm run build:linux
+cd app && npm run build:linux
 ```
 
 ---
