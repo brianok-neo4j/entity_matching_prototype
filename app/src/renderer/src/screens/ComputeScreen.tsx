@@ -1,0 +1,231 @@
+import { useState, useEffect, useRef } from 'react'
+import { useStore } from '../store'
+import ScoreHistogram from '../components/ScoreHistogram'
+import type { ScoreDistributions, Session } from '../../../shared/types'
+
+interface ProgressEntry {
+  metricId: string
+  fieldName: string
+  pct: number
+  pairsAbove: number
+}
+
+export default function ComputeScreen() {
+  const { session, setSession, setScreen, setPairs, setDistributions, addToast } = useStore()
+  const [progress, setProgress] = useState<Map<string, ProgressEntry>>(new Map())
+  const [done, setDone] = useState(false)
+  const [dists, setDists] = useState<ScoreDistributions | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+  const startedRef = useRef(false)
+
+  // Per-metric threshold overrides (for "adjust thresholds" UI)
+  const [thresholds, setThresholds] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    // Register listeners unconditionally so StrictMode's mount→cleanup→remount cycle
+    // doesn't leave us with no listeners when the main process sends COMPUTE_DONE.
+    const offProgress = window.api.compute.onProgress((data) => {
+      setProgress((prev) => {
+        const next = new Map(prev)
+        next.set(`${data.fieldName}:${data.metricId}`, data)
+        return next
+      })
+    })
+
+    const offDone = window.api.compute.onDone((d) => {
+      setDists(d)
+      setDone(true)
+      if (session) {
+        const init: Record<string, number> = {}
+        for (const f of session.fields) {
+          for (const m of f.metrics) {
+            init[`${f.propertyName}:${m.metricId}`] = m.threshold
+          }
+        }
+        setThresholds(init)
+      }
+    })
+
+    // Only start compute once — startedRef survives the StrictMode remount
+    if (session && !startedRef.current) {
+      startedRef.current = true
+      window.api.compute.start(session.id).catch((err) => {
+        addToast(`Compute failed: ${(err as Error).message}`, 'error')
+      })
+    }
+
+    return () => { offProgress(); offDone() }
+  }, [session])
+
+  async function cancel() {
+    setCancelling(true)
+    await window.api.compute.cancel()
+    setScreen('sessions')
+  }
+
+  async function proceed() {
+    if (!session || !dists) return
+
+    // Save adjusted thresholds back to session if changed
+    const updatedSession: Session = {
+      ...session,
+      status: 'reviewing',
+      fields: session.fields.map((f) => ({
+        ...f,
+        metrics: f.metrics.map((m) => ({
+          ...m,
+          threshold: thresholds[`${f.propertyName}:${m.metricId}`] ?? m.threshold,
+        })),
+      })),
+    }
+    await window.api.session.save(updatedSession)
+    setSession(updatedSession)
+    setDistributions(dists)
+    const pairs = await window.api.pairs.list(session.id)
+    setPairs(pairs)
+    setScreen('review')
+  }
+
+  const entries = Array.from(progress.values())
+  const overallPct =
+    entries.length > 0
+      ? Math.round(entries.reduce((sum, e) => sum + e.pct, 0) / entries.length)
+      : 0
+
+  return (
+    <div className="h-full flex items-start justify-center overflow-y-auto">
+      <div className="w-full max-w-2xl py-12 px-6 space-y-8">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Computing Scores</h1>
+          <p className="text-gray-400 text-sm mt-1">
+            {session?.label} · Evaluating pairwise similarity metrics…
+          </p>
+        </div>
+
+        {/* Overall progress */}
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-gray-500">
+            <span>Overall</span>
+            <span>{overallPct}%</span>
+          </div>
+          <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-emerald-500 transition-all duration-300"
+              style={{ width: `${overallPct}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Per-metric progress */}
+        {!done && entries.length > 0 && (
+          <div className="space-y-3">
+            {entries.map((e) => (
+              <div key={`${e.fieldName}:${e.metricId}`} className="space-y-1">
+                <div className="flex justify-between text-xs text-gray-400">
+                  <span>
+                    <span className="text-gray-300">{e.fieldName}</span>
+                    <span className="text-gray-600 mx-1">·</span>
+                    {e.metricId}
+                  </span>
+                  <span>{Math.round(e.pct)}%</span>
+                </div>
+                <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-700 transition-all duration-200"
+                    style={{ width: `${e.pct}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Score distributions with histograms */}
+        {done && dists && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium text-white">Score Distributions</h3>
+              <p className="text-xs text-gray-500">
+                Click or drag the red threshold marker to adjust before proceeding.
+              </p>
+            </div>
+
+            {dists.all.map((d) => {
+              const key = `${d.fieldName}:${d.metricId}`
+              const currentThreshold = thresholds[key] ?? 0.8
+              const above = (() => {
+                // estimate from percentiles
+                const t = currentThreshold
+                if (t <= 0) return 1
+                if (t > d.max) return 0
+                const pts: [number, number][] = [
+                  [0, 0], [d.p50, 0.5], [d.p75, 0.75], [d.p90, 0.9], [d.p95, 0.95], [d.max, 1.0],
+                ]
+                for (let i = 0; i < pts.length - 1; i++) {
+                  const [x0, y0] = pts[i]
+                  const [x1, y1] = pts[i + 1]
+                  if (t >= x0 && t <= x1) {
+                    const frac = x1 === x0 ? y1 : y0 + ((t - x0) / (x1 - x0)) * (y1 - y0)
+                    return Math.max(0, 1 - frac)
+                  }
+                }
+                return 0
+              })()
+
+              return (
+                <div key={key} className="bg-gray-900 rounded-xl border border-gray-800 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm">
+                      <span className="text-white font-medium">{d.fieldName}</span>
+                      <span className="text-gray-600 mx-1">·</span>
+                      <span className="text-gray-400">{d.metricId}</span>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-gray-500">
+                      <span>p50={d.p50.toFixed(2)}</span>
+                      <span>p90={d.p90.toFixed(2)}</span>
+                      <span>max={d.max.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <ScoreHistogram
+                    p50={d.p50}
+                    p75={d.p75}
+                    p90={d.p90}
+                    p95={d.p95}
+                    max={d.max}
+                    threshold={currentThreshold}
+                    onThresholdChange={(v) => setThresholds((prev) => ({ ...prev, [key]: v }))}
+                  />
+
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500">
+                      Threshold:{' '}
+                      <span className="text-red-400 font-mono">{currentThreshold.toFixed(2)}</span>
+                    </span>
+                    <span className={`font-medium ${above > 0.1 ? 'text-emerald-400' : above > 0 ? 'text-amber-400' : 'text-gray-500'}`}>
+                      ≈{Math.round(above * 100)}% of pairs above threshold
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-3">
+          {!done && (
+            <button onClick={cancel} disabled={cancelling} className="btn-secondary">
+              {cancelling ? 'Cancelling…' : 'Cancel'}
+            </button>
+          )}
+          {done && (
+            <button onClick={proceed} className="btn-primary px-8">
+              Proceed to Review →
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
