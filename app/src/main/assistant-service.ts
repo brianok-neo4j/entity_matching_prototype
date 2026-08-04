@@ -25,7 +25,7 @@ function buildSystemPrompt(
   const schema = getCachedSchema()
   const labelMeta = schema?.labels.find((l) => l.name === label)
 
-  let prompt = `You are an assistant helping a user deduplicate nodes in a Neo4j knowledge graph built with neo4j-graphrag-python. Be concise. Never apply a verdict yourself — the human always makes the final call.
+  let prompt = `You are an assistant helping a user deduplicate nodes in a Neo4j knowledge graph. Be concise. Never apply a verdict yourself — the human always makes the final call.
 
 Session context:
 - Label: ${label} (${labelMeta?.count ?? '?'} nodes)
