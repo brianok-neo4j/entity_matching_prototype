@@ -16,7 +16,7 @@ function clampInt(raw: string, min: number, max: number, fallback: number): numb
 }
 
 export default function SettingsScreen() {
-  const { setScreen, addToast, setSettings } = useStore()
+  const { setScreen, addToast, setSettings, connection } = useStore()
   const [form, setForm] = useState<AppSettings>({
     anthropicApiKey: '',
     openaiApiKey: '',
@@ -120,7 +120,14 @@ export default function SettingsScreen() {
       <div className="max-w-2xl mx-auto py-12 px-6 space-y-8">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-white">Settings</h1>
-          <button onClick={() => setScreen('sessions')} className="btn-ghost text-xs">← Back</button>
+          {/* Settings is reachable before connecting, so Back must not land on
+              the session list with no connection selected. */}
+          <button
+            onClick={() => setScreen(connection ? 'sessions' : 'connect')}
+            className="btn-ghost text-xs"
+          >
+            ← Back
+          </button>
         </div>
 
         {/* API Keys */}

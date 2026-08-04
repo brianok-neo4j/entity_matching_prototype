@@ -27,17 +27,22 @@ export default function SessionListScreen() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [resumingId, setResumingId] = useState<string | null>(null)
 
-  useEffect(() => { loadSessions() }, [])
+  // Re-runs when the connection changes; without the dependency the list would
+  // keep showing the previous database's sessions.
+  useEffect(() => { loadSessions() }, [connection?.id])
 
   async function loadSessions() {
+    // Never fall back to listing every connection's sessions — one SQLite file
+    // holds them all, so an unfiltered list mixes databases together.
+    if (!connection) {
+      setSessions([])
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
-      const list = await window.api.session.list()
-      // Filter to sessions for the current connection
-      const filtered = connection
-        ? list.filter((s) => s.connectionId === connection.id)
-        : list
-      setSessions(filtered.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))
+      const list = await window.api.session.list(connection.id)
+      setSessions([...list].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))
     } finally {
       setLoading(false)
     }
@@ -130,10 +135,22 @@ export default function SessionListScreen() {
         {/* Session list */}
         {loading ? (
           <p className="text-gray-500 text-sm">Loading…</p>
+        ) : !connection ? (
+          <div className="text-center py-16 text-gray-600">
+            <p className="text-lg">Not connected</p>
+            <p className="text-sm mt-1">
+              Connect to a Neo4j instance to see the sessions saved for it.
+            </p>
+            <button onClick={() => setScreen('connect')} className="btn-secondary text-xs mt-4">
+              Choose a connection
+            </button>
+          </div>
         ) : sessions.length === 0 ? (
           <div className="text-center py-16 text-gray-600">
             <p className="text-lg">No sessions yet</p>
-            <p className="text-sm mt-1">Create a new session to start deduplicating entities.</p>
+            <p className="text-sm mt-1">
+              Create a new session to start deduplicating entities in {connection.name}.
+            </p>
           </div>
         ) : (
           <div className="space-y-3">
