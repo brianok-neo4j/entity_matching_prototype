@@ -65,6 +65,9 @@ export const IPC = {
   USAGE_LIFETIME: 'usage:lifetime',
   USAGE_PRICING: 'usage:pricing',
   USAGE_CALL: 'usage:call', // main→renderer push, one per completed LLM call
+
+  // Auto-classify run plan (batching, cached prefix, cost estimate)
+  CLASSIFY_PLAN: 'classify:plan',
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

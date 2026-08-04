@@ -9,6 +9,9 @@ const DEFAULTS: AppSettings = {
   theme: 'system',
   useNeo4jStorage: false,
   pricingOverrides: {},
+  classifyBatchSize: 20,
+  classifyFewShotCount: 12,
+  classifyCachedPrefix: true,
 }
 
 export function getSettings(): AppSettings {
