@@ -1,6 +1,8 @@
 # Entity Resolution Tool for Neo4j
 
-A desktop application for deduplicating entity nodes in Neo4j knowledge graphs, purpose-built for graphs created with [neo4j-graphrag-python](https://github.com/neo4j/neo4j-graphrag-python).
+A desktop application for deduplicating entity nodes in any Neo4j graph, with extra support for graphs built by [neo4j-graphrag-python](https://github.com/neo4j/neo4j-graphrag-python).
+
+Schema discovery, similarity scoring, review, and merging work against any labels and properties the database happens to have — nothing in the pipeline requires a particular graph shape. The GraphRAG-specific parts are additive: source-passage display and a sensible set of default hidden labels.
 
 Built with Electron, React, TypeScript, and Tailwind CSS.
 
@@ -79,11 +81,11 @@ Every merge pass writes an audit record to SQLite (and optionally to the graph a
 
 ## GraphRAG integration
 
-The tool assumes the graph was built with neo4j-graphrag-python and understands its conventions:
+None of this is required, but the tool recognises neo4j-graphrag-python's conventions and takes advantage of them when present:
 
-- `__Entity__`, `__KGBuilder__`, `Document`, and `Chunk` labels are hidden from the label selector by default (configurable in Settings)
-- Source passages are fetched via `(:Entity)-[:FROM_CHUNK]->(:Chunk)` and displayed inline in the review panel
-- When **Neo4j storage** is enabled, reviewed pairs are written back as `(:ERPair)-[:INVOLVES]->(:Entity)` nodes, making deduplication decisions queryable from within the graph
+- `__Entity__`, `__KGBuilder__`, `Document`, and `Chunk` labels are hidden from the label selector by default. This is just a default — edit the list in Settings for any other graph.
+- Source passages are fetched via `(:Entity)-[:FROM_CHUNK]->(:Chunk)` and displayed inline in the review panel. The query is an `OPTIONAL MATCH`, so a graph without that structure simply shows no passages rather than failing.
+- When **Neo4j storage** is enabled, reviewed pairs are written back as `(:ERPair)-[:INVOLVES]->(:Entity)` nodes, making deduplication decisions queryable from within the graph. This works on any graph.
 
 ---
 

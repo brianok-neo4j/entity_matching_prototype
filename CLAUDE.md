@@ -4,7 +4,11 @@ Guidance for working in this repo. Read before making changes.
 
 ## Project overview
 
-An Electron desktop app for deduplicating entity nodes in Neo4j knowledge graphs (built for graphs created with neo4j-graphrag-python). Stack: Electron 30+, electron-vite, React 18, TypeScript, Tailwind CSS, Zustand, better-sqlite3, Anthropic SDK, ONNX Runtime (via @huggingface/transformers).
+An Electron desktop app for deduplicating entity nodes in any Neo4j graph, with
+additive support for graphs created with neo4j-graphrag-python (source passages
+via `FROM_CHUNK`, and GraphRAG infrastructure labels hidden by default). The
+scoring, review, and merge pipeline makes no assumptions about graph shape —
+keep it that way when adding features. Stack: Electron 30+, electron-vite, React 18, TypeScript, Tailwind CSS, Zustand, better-sqlite3, Anthropic SDK, ONNX Runtime (via @huggingface/transformers).
 
 All app code lives under `app/`. The repo root holds only `LICENSE`, `README.md`, `.gitignore`, and this file.
 

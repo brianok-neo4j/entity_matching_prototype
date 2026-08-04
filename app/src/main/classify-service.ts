@@ -209,7 +209,7 @@ export function buildPrefix(input: PrefixInput): { text: string; fewShotUsed: nu
     .join('\n')
 
   const sections: string[] = [
-    `You are an entity resolution expert working on a Neo4j knowledge graph built with neo4j-graphrag-python. You decide whether two candidate nodes describe the same real-world entity.
+    `You are an entity resolution expert working on a Neo4j knowledge graph. You decide whether two candidate nodes describe the same real-world entity.
 
 For each pair you are given, return a verdict of "duplicate" or "distinct" and one concise sentence naming the key evidence. Judge on the evidence in the properties; the similarity scores are a signal, not a verdict. Two records can score highly and still be distinct entities (a parent company and its subsidiary, two people sharing a name), and can score poorly and still be the same entity (an abbreviation, a former name, a typo).`,
 
