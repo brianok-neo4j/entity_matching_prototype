@@ -142,7 +142,9 @@ function registerIpc() {
   })
 
   // Sessions
-  ipcMain.handle(IPC.SESSION_LIST, () => sessions.listSessions())
+  ipcMain.handle(IPC.SESSION_LIST, (_, connectionId?: string) =>
+    sessions.listSessions(connectionId)
+  )
   ipcMain.handle(IPC.SESSION_CREATE, (_, partial: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>) =>
     sessions.createSession(partial)
   )
