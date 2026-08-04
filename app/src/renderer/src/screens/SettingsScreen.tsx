@@ -8,6 +8,13 @@ const MODELS = [
   'claude-opus-4-7',
 ]
 
+// Keeps a partially-typed number input from writing NaN into settings.
+function clampInt(raw: string, min: number, max: number, fallback: number): number {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
+
 export default function SettingsScreen() {
   const { setScreen, addToast, setSettings } = useStore()
   const [form, setForm] = useState<AppSettings>({
@@ -18,6 +25,9 @@ export default function SettingsScreen() {
     theme: 'dark',
     useNeo4jStorage: false,
     pricingOverrides: {},
+    classifyBatchSize: 20,
+    classifyFewShotCount: 12,
+    classifyCachedPrefix: true,
   })
   const [saving, setSaving] = useState(false)
   const [newLabel, setNewLabel] = useState('')
@@ -175,6 +185,74 @@ export default function SettingsScreen() {
             />
             <button onClick={addLabel} disabled={!newLabel.trim()} className="btn-secondary text-xs px-3">Add</button>
           </div>
+        </section>
+
+        {/* Auto-classify */}
+        <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 space-y-4">
+          <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">AI Auto-classify</h2>
+          <p className="text-xs text-gray-500">
+            Controls how pending pairs are sent to Claude. Batching is the cost lever; the cached
+            prefix is what makes worked examples affordable.
+          </p>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Pairs per request</label>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                className="input"
+                value={form.classifyBatchSize}
+                onChange={(e) =>
+                  setForm((p) => ({
+                    ...p,
+                    classifyBatchSize: clampInt(e.target.value, 1, 50, p.classifyBatchSize),
+                  }))
+                }
+              />
+              <p className="text-xs text-gray-600 mt-1">
+                Larger batches cost less per pair, but cancelling mid-run wastes up to one batch.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Worked examples</label>
+              <input
+                type="number"
+                min="0"
+                max="50"
+                className="input"
+                value={form.classifyFewShotCount}
+                onChange={(e) =>
+                  setForm((p) => ({
+                    ...p,
+                    classifyFewShotCount: clampInt(e.target.value, 0, 50, p.classifyFewShotCount),
+                  }))
+                }
+              />
+              <p className="text-xs text-gray-600 mt-1">
+                Your own reviewed pairs, included in the prompt as examples. Balanced across
+                Duplicate and Distinct.
+              </p>
+            </div>
+          </div>
+
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.classifyCachedPrefix}
+              onChange={(e) => setForm((p) => ({ ...p, classifyCachedPrefix: e.target.checked }))}
+              className="w-4 h-4 accent-emerald-500"
+            />
+            <div>
+              <div className="text-sm text-white">Cache the shared prompt prefix</div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                Re-reads the dataset context and examples at 10% of input price. Has no effect
+                unless the prefix clears the model&apos;s minimum — the classify dialog reports
+                whether it does.
+              </div>
+            </div>
+          </label>
         </section>
 
         {/* Token pricing */}

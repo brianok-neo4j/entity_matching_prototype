@@ -69,13 +69,17 @@ export function startJob(input: {
   model: string
   sessionId: string | null
   unitCount: number
+  // Discriminates prompt shapes whose per-unit token profile differs (batch
+  // size, cached prefix). Estimates only draw on samples from a matching
+  // variant, so changing the shape doesn't poison history.
+  variant?: string
   features?: Record<string, number | string>
 }): string {
   const id = randomUUID()
   getDb()
     .prepare(
-      `INSERT INTO llm_jobs (id, session_id, kind, model, status, started_at, unit_count, features_json)
-       VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`
+      `INSERT INTO llm_jobs (id, session_id, kind, model, status, started_at, unit_count, variant, features_json)
+       VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -84,6 +88,7 @@ export function startJob(input: {
       normalizeModelId(input.model),
       Date.now(),
       input.unitCount,
+      input.variant ?? '',
       JSON.stringify(input.features ?? {})
     )
   return id
@@ -274,10 +279,19 @@ interface PerUnitSample {
   durationMs: number
 }
 
-function jobSamples(kind: LlmJobKind, model: string | null): PerUnitSample[] {
+function jobSamples(
+  kind: LlmJobKind,
+  model: string | null,
+  variant: string
+): PerUnitSample[] {
   const db = getDb()
-  const clauses = [`kind = ?`, `status IN ('complete', 'cancelled')`, `units_completed > 0`]
-  const params: unknown[] = [kind]
+  const clauses = [
+    `kind = ?`,
+    `variant = ?`,
+    `status IN ('complete', 'cancelled')`,
+    `units_completed > 0`,
+  ]
+  const params: unknown[] = [kind, variant]
   if (model) {
     clauses.push('model = ?')
     params.push(normalizeModelId(model))
@@ -318,18 +332,28 @@ export function estimateJob(input: {
   kind: LlmJobKind
   model: string
   unitCount: number
-  // Cold-start fallback: mean characters of the prompts about to be sent.
+  variant?: string
+  // Cold-start fallback: mean characters of the per-unit portion of the prompt.
   promptCharsPerUnit?: number
   outputTokensPerUnitHint?: number
+  // Batching and caching. The prefix is a fixed cost per run rather than a
+  // per-unit one, so it is modelled separately from the fitted per-unit terms.
+  batchSize?: number
+  prefixTokens?: number
+  prefixCacheable?: boolean
 }): JobEstimate {
   const { pricingOverrides } = getSettings()
   const model = normalizeModelId(input.model)
+  const variant = input.variant ?? ''
+  const batchSize = Math.max(1, input.batchSize ?? 1)
+  const prefixTokens = input.prefixTokens ?? 0
+  const callCount = Math.ceil(input.unitCount / batchSize)
 
-  let samples = jobSamples(input.kind, model)
+  let samples = jobSamples(input.kind, model, variant)
   let basis: JobEstimate['basis'] = samples.length >= MIN_SAMPLES ? 'history' : 'none'
 
   if (basis === 'none') {
-    const crossModel = jobSamples(input.kind, null)
+    const crossModel = jobSamples(input.kind, null, variant)
     if (crossModel.length >= MIN_SAMPLES) {
       samples = crossModel
       basis = 'history-other-model'
@@ -347,9 +371,11 @@ export function estimateJob(input: {
         kind: input.kind,
         model,
         unitCount: input.unitCount,
+        callCount,
         inputTokens: 0,
         outputTokens: 0,
         cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
         costUsd: 0,
         costLowUsd: 0,
         costHighUsd: 0,
@@ -364,7 +390,17 @@ export function estimateJob(input: {
     perUnitInput = { mean: estInput, sd: estInput * 0.25 }
     const estOutput = input.outputTokensPerUnitHint ?? 0
     perUnitOutput = { mean: estOutput, sd: estOutput * 0.4 }
+    // On a cold start the prefix cost has to be derived rather than fitted: a
+    // cacheable prefix is written once and read back on every later call; an
+    // uncacheable one is re-sent in full every call.
+    if (input.prefixCacheable) {
+      perUnitCacheRead = (Math.max(0, callCount - 1) * prefixTokens) / Math.max(1, input.unitCount)
+    } else {
+      perUnitInput.mean += (callCount * prefixTokens) / Math.max(1, input.unitCount)
+    }
   } else {
+    // Fitted per-unit terms already carry whatever prefix behaviour the sampled
+    // runs had, since samples are variant-matched.
     perUnitInput = meanAndSpread(samples.map((s) => s.input))
     perUnitOutput = meanAndSpread(samples.map((s) => s.output))
     perUnitCacheRead = meanAndSpread(samples.map((s) => s.cacheRead)).mean
@@ -373,11 +409,15 @@ export function estimateJob(input: {
   }
 
   const n = input.unitCount
+  // The prefix write is a fixed per-run cost, not a per-unit one — modelling it
+  // per unit would scale it with queue size, which is wrong.
+  const cacheCreation = input.prefixCacheable ? prefixTokens : 0
+
   const tokensAt = (inputMult: number, outputMult: number): TokenCounts => ({
     inputTokens: Math.max(0, Math.round((perUnitInput.mean + inputMult * perUnitInput.sd) * n)),
     outputTokens: Math.max(0, Math.round((perUnitOutput.mean + outputMult * perUnitOutput.sd) * n)),
     cacheReadInputTokens: Math.round(perUnitCacheRead * n),
-    cacheCreationInputTokens: 0,
+    cacheCreationInputTokens: cacheCreation,
   })
 
   const mid = tokensAt(0, 0)
@@ -389,9 +429,11 @@ export function estimateJob(input: {
     kind: input.kind,
     model,
     unitCount: n,
+    callCount,
     inputTokens: mid.inputTokens,
     outputTokens: mid.outputTokens,
     cacheReadInputTokens: mid.cacheReadInputTokens,
+    cacheCreationInputTokens: mid.cacheCreationInputTokens,
     costUsd: cost.totalUsd,
     costLowUsd: low.totalUsd,
     costHighUsd: high.totalUsd,

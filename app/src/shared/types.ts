@@ -188,6 +188,9 @@ export interface AppSettings {
   theme: 'light' | 'dark' | 'system'
   useNeo4jStorage: boolean
   pricingOverrides: PricingOverrides
+  classifyBatchSize: number
+  classifyFewShotCount: number
+  classifyCachedPrefix: boolean
 }
 
 // ─── LLM usage, cost, and telemetry ──────────────────────────────────────────
@@ -263,9 +266,11 @@ export interface JobEstimate {
   kind: LlmJobKind
   model: string
   unitCount: number
+  callCount: number
   inputTokens: number
   outputTokens: number
   cacheReadInputTokens: number
+  cacheCreationInputTokens: number
   costUsd: number
   costLowUsd: number
   costHighUsd: number
@@ -276,6 +281,22 @@ export interface JobEstimate {
   basis: 'history' | 'history-other-model' | 'prompt-size' | 'none'
   sampleSize: number
   priced: boolean
+}
+
+export interface ClassifyPlan {
+  estimate: JobEstimate
+  batchSize: number
+  fewShotCount: number
+  fewShotAvailable: number
+  prefixTokens: number
+  // Exact when counted via the token-counting endpoint; approximated from
+  // characters when that call is unavailable.
+  prefixTokensExact: boolean
+  cacheFloor: number
+  cacheRequested: boolean
+  // False when the prefix is shorter than the model's floor, in which case the
+  // breakpoint is silently ignored by the API.
+  cacheEligible: boolean
 }
 
 // ─── Audit ───────────────────────────────────────────────────────────────────

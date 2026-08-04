@@ -47,6 +47,29 @@ const CATALOG: Record<string, CatalogEntry> = {
   'claude-haiku-4-5': { displayName: 'Claude Haiku 4.5', inputPerMTok: 1, outputPerMTok: 5 },
 }
 
+// Minimum prefix length before a cache_control breakpoint does anything. Below
+// it the API silently declines to cache — no error, just
+// cache_creation_input_tokens: 0. Not monotonic across generations.
+const CACHE_FLOORS: Record<string, number> = {
+  'claude-fable-5': 512,
+  'claude-mythos-5': 512,
+  'claude-opus-5': 512,
+  'claude-opus-4-8': 1024,
+  'claude-sonnet-5': 1024,
+  'claude-sonnet-4-6': 1024,
+  'claude-sonnet-4-5': 1024,
+  'claude-opus-4-7': 2048,
+  'claude-opus-4-6': 4096,
+  'claude-opus-4-5': 4096,
+  'claude-haiku-4-5': 4096,
+}
+
+const DEFAULT_CACHE_FLOOR = 4096
+
+export function cacheFloorFor(model: string): number {
+  return CACHE_FLOORS[normalizeModelId(model)] ?? DEFAULT_CACHE_FLOOR
+}
+
 export function normalizeModelId(model: string): string {
   return model
     .trim()

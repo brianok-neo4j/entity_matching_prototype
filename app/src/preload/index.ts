@@ -12,6 +12,7 @@ import type {
   ScoreDistributions,
   AppSettings,
   AISuggestion,
+  ClassifyPlan,
   JobEstimate,
   LlmCallRecord,
   LlmJobKind,
@@ -142,6 +143,12 @@ const api = {
     lifetime: () => ipcRenderer.invoke(IPC.USAGE_LIFETIME) as Promise<UsageSummary>,
     pricing: () => ipcRenderer.invoke(IPC.USAGE_PRICING) as Promise<ModelPricing[]>,
     onCall: (cb: (record: LlmCallRecord) => void) => on(IPC.USAGE_CALL, cb as never),
+  },
+
+  // ── Auto-classify planning ────────────────────────────────────────────────────
+  classify: {
+    plan: (sessionId: string) =>
+      ipcRenderer.invoke(IPC.CLASSIFY_PLAN, sessionId) as Promise<ClassifyPlan>,
   },
 
   // ── AI configuration suggestion ───────────────────────────────────────────────

@@ -16,6 +16,7 @@ import type {
   MergeGroup,
   MergeApplyResult,
   Verdict,
+  ClassifyPlan,
   JobEstimate,
   UsageTotals,
 } from '../../../shared/types'
@@ -195,45 +196,86 @@ function MergeModal({ sessionId, onClose, onApplied, onGoToSessions, addToast }:
 
 // ── Cost estimate / spend readouts ────────────────────────────────────────────
 
-function EstimatePanel({
-  estimate,
-  loading,
-}: {
-  estimate: JobEstimate | null
-  loading: boolean
-}): ReactElement {
+function EstimatePanel({ plan, loading }: { plan: ClassifyPlan | null; loading: boolean }): ReactElement {
   if (loading) {
-    return <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 text-xs text-gray-500">Estimating cost…</div>
+    return <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 text-xs text-gray-500">Planning run…</div>
   }
-  if (!estimate || estimate.basis === 'none' || estimate.unitCount === 0) {
+  if (!plan || plan.estimate.unitCount === 0) {
     return (
       <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 text-xs text-gray-500">
-        No cost estimate available yet — run once and future runs will be estimated from it.
+        Nothing to classify.
       </div>
     )
   }
 
+  const { estimate } = plan
+  const cacheOff = !plan.cacheRequested
+  const cacheBlocked = plan.cacheRequested && !plan.cacheEligible
+
   return (
-    <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 space-y-2">
+    <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 space-y-3">
       <div className="flex items-baseline justify-between">
         <span className="text-xs uppercase tracking-wide text-gray-500">Estimated cost</span>
         <span className="text-lg font-semibold text-white">
-          {estimate.priced ? formatUsdRange(estimate.costLowUsd, estimate.costHighUsd) : '—'}
+          {estimate.priced && estimate.basis !== 'none'
+            ? formatUsdRange(estimate.costLowUsd, estimate.costHighUsd)
+            : '—'}
         </span>
       </div>
+
       <div className="text-xs text-gray-500 space-y-0.5">
         <p>
-          ~{formatTokens(estimate.inputTokens)} input · ~{formatTokens(estimate.outputTokens)} output
-          across {estimate.unitCount} call{estimate.unitCount === 1 ? '' : 's'} on{' '}
-          <span className="text-gray-400">{estimate.model}</span>
+          {estimate.unitCount} pair{estimate.unitCount === 1 ? '' : 's'} in{' '}
+          <span className="text-gray-400">
+            {estimate.callCount} call{estimate.callCount === 1 ? '' : 's'}
+          </span>{' '}
+          of {plan.batchSize} on <span className="text-gray-400">{estimate.model}</span>
         </p>
+        {estimate.basis !== 'none' && (
+          <p>
+            ~{formatTokens(estimate.inputTokens)} input · ~{formatTokens(estimate.outputTokens)}{' '}
+            output
+            {estimate.cacheReadInputTokens > 0 &&
+              ` · ~${formatTokens(estimate.cacheReadInputTokens)} cache read`}
+          </p>
+        )}
         {estimate.durationMsEstimate !== null && (
           <p>~{formatDuration(estimate.durationMsEstimate)} to run</p>
         )}
         <p className="text-gray-600">{describeBasis(estimate)}</p>
+      </div>
+
+      <div className="text-xs border-t border-gray-800 pt-2 space-y-0.5">
+        <p className="text-gray-500">
+          Shared prefix: {formatTokens(plan.prefixTokens)} tokens
+          {!plan.prefixTokensExact && ' (approx.)'}
+          {plan.fewShotAvailable > 0
+            ? ` · ${plan.fewShotAvailable} worked example${plan.fewShotAvailable === 1 ? '' : 's'}`
+            : ' · no worked examples yet'}
+        </p>
+        {plan.cacheRequested && plan.cacheEligible && (
+          <p className="text-emerald-500">
+            Prefix is cached — re-read at 10% of input price on every call after the first.
+          </p>
+        )}
+        {cacheBlocked && (
+          <p className="text-amber-500">
+            Prefix is {formatTokens(plan.prefixTokens)} tokens, below the{' '}
+            {formatTokens(plan.cacheFloor)}-token cache minimum for {estimate.model} — it will be
+            re-sent in full on every call. Raise the worked-example count, or switch to a model with
+            a lower floor.
+          </p>
+        )}
+        {cacheOff && <p className="text-gray-600">Prefix caching is disabled in Settings.</p>}
         {!estimate.priced && (
           <p className="text-amber-500">
             No pricing on record for this model — set a rate in Settings to see cost.
+          </p>
+        )}
+        {plan.fewShotAvailable === 0 && (
+          <p className="text-gray-600">
+            Review a few pairs by hand first — decided pairs become worked examples and measurably
+            improve accuracy.
           </p>
         )}
       </div>
@@ -282,7 +324,7 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
     completed: 0, total: pendingCount, lastVerdict: null,
   })
   const [phase, setPhase] = useState<'estimating' | 'ready' | 'running' | 'done'>('estimating')
-  const [estimate, setEstimate] = useState<JobEstimate | null>(null)
+  const [plan, setPlan] = useState<ClassifyPlan | null>(null)
   const [spend, setSpend] = useState<UsageTotals | null>(null)
   const [cancelled, setCancelled] = useState(false)
   const [classified, setClassified] = useState(0)
@@ -300,9 +342,9 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
   }, [])
 
   useEffect(() => {
-    window.api.usage.estimate('auto-classify', sessionId)
-      .then((e) => { setEstimate(e); setPhase('ready') })
-      .catch(() => setPhase('ready'))
+    window.api.classify.plan(sessionId)
+      .then((p) => { setPlan(p); setPhase('ready') })
+      .catch((err) => { addToast((err as Error).message, 'error'); setPhase('ready') })
   }, [sessionId])
 
   function handleStart(): void {
@@ -350,7 +392,7 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
                 {pendingCount} pending pair{pendingCount === 1 ? '' : 's'} will each be sent to
                 Claude as one request.
               </p>
-              <EstimatePanel estimate={estimate} loading={phase === 'estimating'} />
+              <EstimatePanel plan={plan} loading={phase === 'estimating'} />
             </>
           ) : !done ? (
             <>
@@ -379,7 +421,7 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
                   </span>
                 </p>
               )}
-              <SpendRow spend={spend} estimate={estimate} label="Spent so far" />
+              <SpendRow spend={spend} estimate={plan?.estimate ?? null} label="Spent so far" />
             </>
           ) : cancelled ? (
             <>
@@ -392,7 +434,7 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
               <p className="text-xs text-gray-500">
                 Partial results are saved. You can review them now or run AI classify again to continue.
               </p>
-              <SpendRow spend={spend} estimate={estimate} label="Total spend" />
+              <SpendRow spend={spend} estimate={plan?.estimate ?? null} label="Total spend" />
             </>
           ) : (
             <>
@@ -406,7 +448,7 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
                 Each pair has been given a verdict and an <span className="text-gray-400">[AI]</span> note
                 explaining the reasoning. You can override any decision by clicking Duplicate / Distinct.
               </p>
-              <SpendRow spend={spend} estimate={estimate} label="Total spend" />
+              <SpendRow spend={spend} estimate={plan?.estimate ?? null} label="Total spend" />
             </>
           )}
         </div>

@@ -14,12 +14,18 @@ import { estimatePairCount } from './candidate-generator'
 import * as neo4jStorage from './neo4j-storage'
 import { toJsNumber } from './neo4j-int'
 import * as usage from './usage-service'
-import { listPricing } from './pricing'
+import * as classify from './classify-service'
+// Type-only: the runtime import stays lazy so the SDK isn't loaded at startup.
+import type AnthropicClient from '@anthropic-ai/sdk'
+import { listPricing, cacheFloorFor } from './pricing'
+import { getCachedSchema } from './schema-service'
 import type {
   Session,
   Verdict,
   CandidatePair,
   AISuggestion,
+  AppSettings,
+  ClassifyPlan,
   JobEstimate,
   LlmJobKind,
 } from '../shared/types'
@@ -64,39 +70,107 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 
-function buildClassificationPrompt(pair: CandidatePair): string {
-  const fmt = (props: Record<string, unknown>) =>
-    Object.entries(props).map(([k, v]) => `  ${k}: ${String(v)}`).join('\n') || '  (no properties)'
-  const scores = pair.scores
-    .map((s) => `  ${s.fieldName} · ${s.metricId}: ${s.score.toFixed(3)}${s.aboveThreshold ? ' ✓' : ''}`)
-    .join('\n')
-  return `Classify whether these two "${pair.label}" entities are the same real-world entity or distinct entities.
-
-Entity A:
-${fmt(pair.nodeA.properties)}
-
-Entity B:
-${fmt(pair.nodeB.properties)}
-
-Similarity scores:
-${scores}
-
-Respond with EXACTLY these two lines and nothing else:
-VERDICT: DUPLICATE
-REASON: One concise sentence explaining the key evidence.
-
-Replace DUPLICATE with DISTINCT if they are different entities.`
-}
-
-// Sampled rather than exhaustive: building every prompt just to size a preview
-// would stall the UI on large queues.
+// Sampled rather than exhaustive: building every pair block just to size a
+// preview would stall the UI on large queues.
 const PROMPT_SAMPLE_SIZE = 25
 
-function meanPromptChars(pairs: CandidatePair[]): number {
+function meanPairBlockChars(pairs: CandidatePair[]): number {
   if (pairs.length === 0) return 0
   const sample = pairs.slice(0, PROMPT_SAMPLE_SIZE)
-  const total = sample.reduce((sum, p) => sum + buildClassificationPrompt(p).length, 0)
+  const total = sample.reduce((sum, p) => sum + classify.buildPairBlock(p, 'P00').length, 0)
   return Math.round(total / sample.length)
+}
+
+// Distinguishes prompt shapes whose per-unit token profile differs, so the
+// estimator never mixes single-pair history into a batched run's forecast.
+function classifyVariant(batchSize: number, cached: boolean): string {
+  return `batch:${batchSize}${cached ? '+cache' : ''}`
+}
+
+const CHARS_PER_TOKEN_FALLBACK = 3.6
+
+// Builds the run's cached prefix and everything derived from it. Returns the
+// prefix text alongside the renderer-facing plan so the classify handler and
+// the preview stay in lockstep — they must produce byte-identical prefixes.
+async function buildClassifyPlan(
+  client: AnthropicClient,
+  sessionId: string,
+  allPairs: CandidatePair[],
+  settings: AppSettings
+): Promise<{
+  prefixText: string
+  prefixTokens: number
+  cacheRequested: boolean
+  cacheEligible: boolean
+  fewShotAvailable: number
+  plan: ClassifyPlan
+}> {
+  const session = sessions.loadSession(sessionId)
+  if (!session) throw new Error('Session not found')
+
+  const model = settings.assistantModel || 'claude-haiku-4-5-20251001'
+  const batchSize = Math.max(1, settings.classifyBatchSize)
+  const pending = allPairs.filter((p) => p.verdict === 'pending')
+
+  const { text: prefixText, fewShotUsed } = classify.buildPrefix({
+    session,
+    labelMeta: getCachedSchema()?.labels.find((l) => l.name === session.label) ?? null,
+    allPairs,
+    fewShotCount: settings.classifyFewShotCount,
+  })
+
+  // count_tokens is free and exact; fall back to a character ratio if it fails
+  // so a network blip degrades the preview rather than breaking it.
+  let prefixTokens: number
+  let prefixTokensExact = true
+  try {
+    const counted = await client.messages.countTokens({
+      model,
+      system: [{ type: 'text', text: prefixText }],
+      messages: [{ role: 'user', content: 'x' }],
+    })
+    prefixTokens = counted.input_tokens
+  } catch {
+    prefixTokens = Math.round(prefixText.length / CHARS_PER_TOKEN_FALLBACK)
+    prefixTokensExact = false
+  }
+
+  const cacheFloor = cacheFloorFor(model)
+  const cacheRequested = settings.classifyCachedPrefix
+  const cacheEligible = prefixTokens >= cacheFloor
+  const useCache = cacheRequested && cacheEligible
+
+  const estimate = usage.estimateJob({
+    kind: 'auto-classify',
+    model,
+    unitCount: pending.length,
+    variant: classifyVariant(batchSize, useCache),
+    promptCharsPerUnit: meanPairBlockChars(pending),
+    // Two short lines per pair plus JSON scaffolding.
+    outputTokensPerUnitHint: 55,
+    batchSize,
+    prefixTokens,
+    prefixCacheable: useCache,
+  })
+
+  return {
+    prefixText,
+    prefixTokens,
+    cacheRequested,
+    cacheEligible,
+    fewShotAvailable: fewShotUsed,
+    plan: {
+      estimate,
+      batchSize,
+      fewShotCount: settings.classifyFewShotCount,
+      fewShotAvailable: fewShotUsed,
+      prefixTokens,
+      prefixTokensExact,
+      cacheFloor,
+      cacheRequested,
+      cacheEligible,
+    },
+  }
 }
 
 // Pushes a completed call to the renderer so single-call features can show what
@@ -317,46 +391,65 @@ function registerIpc() {
   ipcMain.handle(IPC.PAIRS_AUTO_CLASSIFY_CANCEL, () => { autoClassifyCancelled = true })
 
   ipcMain.handle(IPC.PAIRS_AUTO_CLASSIFY, async (event, sessionId: string) => {
-    const { anthropicApiKey, assistantModel } = getSettings()
-    if (!anthropicApiKey) throw new Error('Anthropic API key not set. Add it in Settings.')
+    const settings = getSettings()
+    if (!settings.anthropicApiKey) throw new Error('Anthropic API key not set. Add it in Settings.')
 
     autoClassifyCancelled = false
 
-    const pending = sessions.listPairs(sessionId).filter((p) => p.verdict === 'pending')
+    const allPairs = sessions.listPairs(sessionId)
+    const pending = allPairs.filter((p) => p.verdict === 'pending')
     const total = pending.length
 
     const { default: Anthropic } = await import('@anthropic-ai/sdk')
-    const client = new Anthropic({ apiKey: anthropicApiKey })
-    const model = assistantModel || 'claude-haiku-4-5-20251001'
+    const client = new Anthropic({ apiKey: settings.anthropicApiKey })
+    const model = settings.assistantModel || 'claude-haiku-4-5-20251001'
+    const batchSize = Math.max(1, settings.classifyBatchSize)
+
+    const plan = await buildClassifyPlan(client, sessionId, allPairs, settings)
+    // Snapshot the prefix for the whole run. Rebuilding it as verdicts land
+    // would change its bytes and cold-start the cache on every call.
+    const prefix = plan.prefixText
+    const useCache = plan.cacheRequested && plan.cacheEligible
 
     const jobId = usage.startJob({
       kind: 'auto-classify',
       model,
       sessionId,
       unitCount: total,
+      variant: classifyVariant(batchSize, useCache),
       features: {
         label: sessions.loadSession(sessionId)?.label ?? '',
-        avgPromptChars: meanPromptChars(pending),
+        batchSize,
+        prefixTokens: plan.prefixTokens,
+        fewShotUsed: plan.fewShotAvailable,
+        cacheEnabled: useCache ? 1 : 0,
       },
     })
 
+    const systemBlocks = useCache
+      ? [{ type: 'text' as const, text: prefix, cache_control: { type: 'ephemeral' as const } }]
+      : [{ type: 'text' as const, text: prefix }]
+
     let classified = 0
     let attempted = 0
-    for (const pair of pending) {
-      // Check cancel flag before starting each new API call
-      if (autoClassifyCancelled) break
+    const decided = new Map<string, { verdict: Verdict; note: string }>()
 
-      let verdict: 'duplicate' | 'distinct' | null = null
-      let note: string | null = null
-      const prompt = buildClassificationPrompt(pair)
+    // Resolves one group of pairs, returning the pairs it could not classify.
+    async function runBatch(batch: CandidatePair[]): Promise<CandidatePair[]> {
+      const { text, tagToPairId } = classify.buildBatchMessage(batch)
       const startedAt = Date.now()
-      attempted++
+      const featureBase = { batchPairs: batch.length, promptChars: text.length }
+
       try {
         const msg = await client.messages.create({
           model,
-          max_tokens: 150,
-          messages: [{ role: 'user', content: prompt }],
+          // Two short lines per pair, plus schema overhead.
+          max_tokens: Math.min(8192, 120 * batch.length + 256),
+          system: systemBlocks,
+          messages: [{ role: 'user', content: text }],
+          output_config: { format: { type: 'json_schema', schema: classify.BATCH_OUTPUT_SCHEMA } },
         })
+
         usage.recordCall({
           jobId,
           sessionId,
@@ -366,22 +459,30 @@ function registerIpc() {
           tokens: usage.tokensFromUsage(msg.usage),
           ok: true,
           stopReason: msg.stop_reason,
-          features: { promptChars: prompt.length, pairId: pair.id },
+          features: featureBase,
         })
-        const text = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : ''
-        const lines = text.split('\n')
-        const vLine = lines.find((l) => l.startsWith('VERDICT:'))?.replace('VERDICT:', '').trim().toLowerCase()
-        const reason = lines.find((l) => l.startsWith('REASON:'))?.replace('REASON:', '').trim() ?? ''
-        if (vLine === 'duplicate' || vLine === 'distinct') {
-          verdict = vLine
-          note = `[AI] ${reason}`
-          sessions.setVerdict(pair.id, verdict)
-          sessions.setNote(pair.id, note)
+
+        const raw = msg.content.find((b) => b.type === 'text')
+        const { results, unresolvedTags } = classify.parseBatchResponse(
+          raw?.type === 'text' ? raw.text : '',
+          tagToPairId
+        )
+
+        for (const r of results) {
+          const note = `[AI] ${r.reason}`
+          sessions.setVerdict(r.pairId, r.verdict)
+          sessions.setNote(r.pairId, note)
           classified++
+          decided.set(r.pairId, { verdict: r.verdict, note })
         }
+
+        const unresolvedIds = new Set(
+          unresolvedTags.map((t) => tagToPairId.get(t)).filter((id): id is string => Boolean(id))
+        )
+        return batch.filter((p) => unresolvedIds.has(p.id))
       } catch (err) {
         // A failed call still consumed the request; log it so the ledger and the
-        // failure rate stay honest, then skip the pair.
+        // failure rate stay honest.
         usage.recordCall({
           jobId,
           sessionId,
@@ -391,20 +492,45 @@ function registerIpc() {
           tokens: usage.emptyTokens(),
           ok: false,
           error: (err as Error).message,
-          features: { promptChars: prompt.length, pairId: pair.id },
+          features: featureBase,
         })
+        return batch
+      }
+    }
+
+    for (let i = 0; i < pending.length; i += batchSize) {
+      // Cancellation is checked per call, so a batch costs up to batchSize - 1
+      // pairs of extra work.
+      if (autoClassifyCancelled) break
+
+      const batch = pending.slice(i, i + batchSize)
+      attempted += batch.length
+
+      let unresolved = await runBatch(batch)
+
+      // Retry stragglers individually. A batch that failed wholesale is far more
+      // likely to be a transport error than a per-pair one, so only retry
+      // partial failures — otherwise one outage costs a second full pass.
+      if (unresolved.length > 0 && unresolved.length < batch.length) {
+        for (const pair of unresolved) {
+          if (autoClassifyCancelled) break
+          await runBatch([pair])
+        }
+        unresolved = []
       }
 
-      event.sender.send(IPC.PAIRS_AUTO_CLASSIFY_PROGRESS, {
-        pairId: pair.id,
-        verdict,
-        note,
-        completed: classified,
-        total,
-        // Primary-key lookup on the job row — safe to call once per pair, unlike
-        // the session-wide aggregate, which would be O(n²) over a long run.
-        usage: usage.getJobTotals(jobId),
-      })
+      const totals = usage.getJobTotals(jobId)
+      for (const pair of batch) {
+        const outcome = decided.get(pair.id)
+        event.sender.send(IPC.PAIRS_AUTO_CLASSIFY_PROGRESS, {
+          pairId: pair.id,
+          verdict: outcome?.verdict ?? null,
+          note: outcome?.note ?? null,
+          completed: classified,
+          total,
+          usage: totals,
+        })
+      }
     }
 
     usage.finishJob(jobId, autoClassifyCancelled ? 'cancelled' : 'complete', attempted)
@@ -416,6 +542,17 @@ function registerIpc() {
     }
   })
 
+  ipcMain.handle(IPC.CLASSIFY_PLAN, async (_, sessionId: string): Promise<ClassifyPlan> => {
+    const settings = getSettings()
+    if (!settings.anthropicApiKey) throw new Error('Anthropic API key not set. Add it in Settings.')
+
+    const { default: Anthropic } = await import('@anthropic-ai/sdk')
+    const client = new Anthropic({ apiKey: settings.anthropicApiKey })
+    const allPairs = sessions.listPairs(sessionId)
+    const plan = await buildClassifyPlan(client, sessionId, allPairs, settings)
+    return plan.plan
+  })
+
   // Settings
   ipcMain.handle(IPC.SETTINGS_GET, () => getSettings())
   ipcMain.handle(IPC.SETTINGS_SET, (_, partial) => setSettings(partial))
@@ -425,25 +562,12 @@ function registerIpc() {
   ipcMain.handle(IPC.USAGE_LIFETIME, () => usage.getLifetimeUsage())
   ipcMain.handle(IPC.USAGE_PRICING, () => listPricing(getSettings().pricingOverrides))
 
+  // Auto-classify estimates go through IPC.CLASSIFY_PLAN instead — they need the
+  // prefix built to size it.
   ipcMain.handle(
     IPC.USAGE_ESTIMATE,
-    (_, kind: LlmJobKind, sessionId: string | null): JobEstimate => {
+    (_, kind: LlmJobKind): JobEstimate => {
       const model = getSettings().assistantModel || 'claude-haiku-4-5-20251001'
-
-      if (kind === 'auto-classify') {
-        const pending = sessionId
-          ? sessions.listPairs(sessionId).filter((p) => p.verdict === 'pending')
-          : []
-        return usage.estimateJob({
-          kind,
-          model,
-          unitCount: pending.length,
-          promptCharsPerUnit: meanPromptChars(pending),
-          // The classification prompt asks for exactly two short lines.
-          outputTokensPerUnitHint: 45,
-        })
-      }
-
       return usage.estimateJob({ kind, model, unitCount: 1 })
     }
   )

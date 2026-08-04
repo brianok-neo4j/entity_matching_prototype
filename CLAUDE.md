@@ -53,6 +53,24 @@ becomes invisible.
 - Estimation falls back through: prior runs on this model → prior runs on any
   model → prompt-character extrapolation → no estimate.
 
+### Batched auto-classify
+
+`app/src/main/classify-service.ts` owns the auto-classify prompt. The shape is a
+**cached run-invariant prefix** (dataset schema, metrics, score-percentile
+calibration, and few-shot examples drawn from the user's own verdicts) plus a
+per-call user message carrying N pairs, each tagged `[P1]`…`[Pn]`. Responses come
+back as structured output validated against `BATCH_OUTPUT_SCHEMA`.
+
+- The prefix is built **once** at job start and reused verbatim. Rebuilding it
+  mid-run changes its bytes and cold-starts the cache on every call.
+- Few-shot selection is deterministic (sorted, fixed stride, balanced across
+  verdicts) for the same reason.
+- Pairs the model doesn't return are retried individually — but only on a
+  *partial* failure. A wholesale batch failure is almost always transport-level,
+  so retrying it pair-by-pair would double the cost of an outage.
+- Batch size, few-shot count, and prefix caching are user settings
+  (`classifyBatchSize`, `classifyFewShotCount`, `classifyCachedPrefix`).
+
 ## Key constraints and gotchas
 
 **React 18 StrictMode double-mount** — effects run twice in development. Any one-shot IPC listener or API call must be guarded with a `startedRef`:
@@ -89,6 +107,19 @@ rows for the session. Calling it once per pair in auto-classify is O(n²). Use
 **Failed LLM calls are still recorded** — with zero tokens and `ok = 0`. Jobs
 finished as `'failed'`, or with `units_completed = 0`, are excluded from
 `estimateJob()` samples so a broken run can't skew future estimates.
+
+**A sub-floor cached prefix costs more, not less** — prompt caching only engages
+above a model-specific minimum (4096 tokens on Haiku 4.5, the default model;
+`cacheFloorFor()` in `pricing.ts`). Below it the breakpoint is silently ignored
+and the whole prefix is re-sent at full price on every call, which is *worse*
+than not having a rich prefix at all. `buildClassifyPlan()` counts the prefix via
+the token-counting endpoint and the classify dialog reports eligibility — do not
+remove that warning.
+
+**Estimator samples are variant-scoped** — `llm_jobs.variant` records the prompt
+shape (`batch:20+cache`). Changing batch size or cache setting starts a fresh
+sample pool rather than blending incompatible per-unit token profiles. Any future
+change to prompt shape needs a new variant string.
 
 **Settings loading** — `App.tsx` loads settings on mount via `window.api.settings.get().then(setSettings)`. The `.then()` call must not be dropped; if it is, `store.settings` stays `null` and any feature gated on `settings.anthropicKey` will be permanently disabled.
 

@@ -120,4 +120,19 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_scores_pair    ON pair_scores(pair_id);
     CREATE INDEX IF NOT EXISTS idx_audit_session  ON audit_records(session_id);
   `)
+
+  addColumn(db, 'llm_jobs', 'variant', `TEXT NOT NULL DEFAULT ''`)
+}
+
+// CREATE TABLE IF NOT EXISTS won't add a column to a table that already exists,
+// so schema additions made after a table has shipped go through here.
+function addColumn(
+  db: Database.Database,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+  if (columns.some((c) => c.name === column)) return
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
