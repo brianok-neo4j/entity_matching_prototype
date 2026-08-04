@@ -42,7 +42,8 @@ const api = {
 
   // ── Sessions ─────────────────────────────────────────────────────────────────
   session: {
-    list: () => ipcRenderer.invoke(IPC.SESSION_LIST) as Promise<Session[]>,
+    list: (connectionId?: string) =>
+      ipcRenderer.invoke(IPC.SESSION_LIST, connectionId) as Promise<Session[]>,
     create: (partial: Omit<Session, 'id' | 'createdAt' | 'updatedAt'>) =>
       ipcRenderer.invoke(IPC.SESSION_CREATE, partial) as Promise<Session>,
     load: (id: string) => ipcRenderer.invoke(IPC.SESSION_LOAD, id) as Promise<Session>,

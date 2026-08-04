@@ -20,9 +20,17 @@ function rowToSession(row: Record<string, unknown>): Session {
   }
 }
 
-export function listSessions(): Session[] {
+// One SQLite file holds the sessions for every saved connection, so a caller
+// that omits connectionId gets every database's sessions mixed together.
+export function listSessions(connectionId?: string): Session[] {
   const db = getDb()
-  const rows = db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as Record<string, unknown>[]
+  const rows = (
+    connectionId
+      ? db
+          .prepare('SELECT * FROM sessions WHERE connection_id = ? ORDER BY updated_at DESC')
+          .all(connectionId)
+      : db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all()
+  ) as Record<string, unknown>[]
   return rows.map(rowToSession)
 }
 
