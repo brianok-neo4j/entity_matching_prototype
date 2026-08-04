@@ -389,8 +389,9 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
           {phase === 'estimating' || phase === 'ready' ? (
             <>
               <p className="text-sm text-gray-400">
-                {pendingCount} pending pair{pendingCount === 1 ? '' : 's'} will each be sent to
-                Claude as one request.
+                {pendingCount} pending pair{pendingCount === 1 ? '' : 's'} to classify. Pairs are
+                sent in batches behind a shared prompt, with your reviewed pairs included as
+                worked examples.
               </p>
               <EstimatePanel plan={plan} loading={phase === 'estimating'} />
             </>
