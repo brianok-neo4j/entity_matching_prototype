@@ -13,7 +13,16 @@ import { getDb } from './db'
 import { estimatePairCount } from './candidate-generator'
 import * as neo4jStorage from './neo4j-storage'
 import { toJsNumber } from './neo4j-int'
-import type { Session, Verdict, CandidatePair, AISuggestion } from '../shared/types'
+import * as usage from './usage-service'
+import { listPricing } from './pricing'
+import type {
+  Session,
+  Verdict,
+  CandidatePair,
+  AISuggestion,
+  JobEstimate,
+  LlmJobKind,
+} from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 let computeAbort: AbortController | null = null
@@ -77,6 +86,23 @@ VERDICT: DUPLICATE
 REASON: One concise sentence explaining the key evidence.
 
 Replace DUPLICATE with DISTINCT if they are different entities.`
+}
+
+// Sampled rather than exhaustive: building every prompt just to size a preview
+// would stall the UI on large queues.
+const PROMPT_SAMPLE_SIZE = 25
+
+function meanPromptChars(pairs: CandidatePair[]): number {
+  if (pairs.length === 0) return 0
+  const sample = pairs.slice(0, PROMPT_SAMPLE_SIZE)
+  const total = sample.reduce((sum, p) => sum + buildClassificationPrompt(p).length, 0)
+  return Math.round(total / sample.length)
+}
+
+// Pushes a completed call to the renderer so single-call features can show what
+// they just spent. Loop-driven jobs report through their own progress channel.
+function emitCall(record: import('../shared/types').LlmCallRecord): void {
+  mainWindow?.webContents.send(IPC.USAGE_CALL, record)
 }
 
 // ── IPC Registration ──────────────────────────────────────────────────────────
@@ -225,7 +251,8 @@ function registerIpc() {
     await assistant.sendMessage(
       sessionId, pairId, message,
       (chunk) => event.sender.send(IPC.ASSISTANT_CHUNK, chunk),
-      () => event.sender.send(IPC.ASSISTANT_DONE)
+      () => event.sender.send(IPC.ASSISTANT_DONE),
+      (record) => event.sender.send(IPC.USAGE_CALL, record)
     )
   })
 
@@ -302,18 +329,44 @@ function registerIpc() {
     const client = new Anthropic({ apiKey: anthropicApiKey })
     const model = assistantModel || 'claude-haiku-4-5-20251001'
 
+    const jobId = usage.startJob({
+      kind: 'auto-classify',
+      model,
+      sessionId,
+      unitCount: total,
+      features: {
+        label: sessions.loadSession(sessionId)?.label ?? '',
+        avgPromptChars: meanPromptChars(pending),
+      },
+    })
+
     let classified = 0
+    let attempted = 0
     for (const pair of pending) {
       // Check cancel flag before starting each new API call
       if (autoClassifyCancelled) break
 
       let verdict: 'duplicate' | 'distinct' | null = null
       let note: string | null = null
+      const prompt = buildClassificationPrompt(pair)
+      const startedAt = Date.now()
+      attempted++
       try {
         const msg = await client.messages.create({
           model,
           max_tokens: 150,
-          messages: [{ role: 'user', content: buildClassificationPrompt(pair) }],
+          messages: [{ role: 'user', content: prompt }],
+        })
+        usage.recordCall({
+          jobId,
+          sessionId,
+          kind: 'auto-classify',
+          model: msg.model,
+          startedAt,
+          tokens: usage.tokensFromUsage(msg.usage),
+          ok: true,
+          stopReason: msg.stop_reason,
+          features: { promptChars: prompt.length, pairId: pair.id },
         })
         const text = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : ''
         const lines = text.split('\n')
@@ -326,17 +379,74 @@ function registerIpc() {
           sessions.setNote(pair.id, note)
           classified++
         }
-      } catch { /* skip pair on API error */ }
+      } catch (err) {
+        // A failed call still consumed the request; log it so the ledger and the
+        // failure rate stay honest, then skip the pair.
+        usage.recordCall({
+          jobId,
+          sessionId,
+          kind: 'auto-classify',
+          model,
+          startedAt,
+          tokens: usage.emptyTokens(),
+          ok: false,
+          error: (err as Error).message,
+          features: { promptChars: prompt.length, pairId: pair.id },
+        })
+      }
 
-      event.sender.send(IPC.PAIRS_AUTO_CLASSIFY_PROGRESS, { pairId: pair.id, verdict, note, completed: classified, total })
+      event.sender.send(IPC.PAIRS_AUTO_CLASSIFY_PROGRESS, {
+        pairId: pair.id,
+        verdict,
+        note,
+        completed: classified,
+        total,
+        // Primary-key lookup on the job row — safe to call once per pair, unlike
+        // the session-wide aggregate, which would be O(n²) over a long run.
+        usage: usage.getJobTotals(jobId),
+      })
     }
 
-    return { classified, cancelled: autoClassifyCancelled }
+    usage.finishJob(jobId, autoClassifyCancelled ? 'cancelled' : 'complete', attempted)
+
+    return {
+      classified,
+      cancelled: autoClassifyCancelled,
+      usage: usage.getSessionUsage(sessionId).totals,
+    }
   })
 
   // Settings
   ipcMain.handle(IPC.SETTINGS_GET, () => getSettings())
   ipcMain.handle(IPC.SETTINGS_SET, (_, partial) => setSettings(partial))
+
+  // Usage, cost, and estimation
+  ipcMain.handle(IPC.USAGE_SESSION, (_, sessionId: string) => usage.getSessionUsage(sessionId))
+  ipcMain.handle(IPC.USAGE_LIFETIME, () => usage.getLifetimeUsage())
+  ipcMain.handle(IPC.USAGE_PRICING, () => listPricing(getSettings().pricingOverrides))
+
+  ipcMain.handle(
+    IPC.USAGE_ESTIMATE,
+    (_, kind: LlmJobKind, sessionId: string | null): JobEstimate => {
+      const model = getSettings().assistantModel || 'claude-haiku-4-5-20251001'
+
+      if (kind === 'auto-classify') {
+        const pending = sessionId
+          ? sessions.listPairs(sessionId).filter((p) => p.verdict === 'pending')
+          : []
+        return usage.estimateJob({
+          kind,
+          model,
+          unitCount: pending.length,
+          promptCharsPerUnit: meanPromptChars(pending),
+          // The classification prompt asks for exactly two short lines.
+          outputTokensPerUnitHint: 45,
+        })
+      }
+
+      return usage.estimateJob({ kind, model, unitCount: 1 })
+    }
+  )
 
   // AI configuration suggestion
   ipcMain.handle(IPC.CONFIGURE_SUGGEST, async (_, labelName: string, properties: { name: string; kind: string; sampleValues: string[] }[]): Promise<AISuggestion> => {
@@ -383,11 +493,50 @@ Respond with ONLY valid JSON, no markdown fences, no extra text:
 
     const { default: Anthropic } = await import('@anthropic-ai/sdk')
     const client = new Anthropic({ apiKey: anthropicApiKey })
-    const msg = await client.messages.create({
-      model: assistantModel || 'claude-haiku-4-5-20251001',
-      max_tokens: 1500,
-      messages: [{ role: 'user', content: prompt }],
-    })
+    const model = assistantModel || 'claude-haiku-4-5-20251001'
+    const startedAt = Date.now()
+
+    let msg: Awaited<ReturnType<typeof client.messages.create>>
+    try {
+      msg = await client.messages.create({
+        model,
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
+      })
+    } catch (err) {
+      emitCall(
+        usage.recordCall({
+          jobId: null,
+          sessionId: null,
+          kind: 'configure-suggest',
+          model,
+          startedAt,
+          tokens: usage.emptyTokens(),
+          ok: false,
+          error: (err as Error).message,
+          features: { promptChars: prompt.length, label: labelName },
+        })
+      )
+      throw err
+    }
+
+    emitCall(
+      usage.recordCall({
+        jobId: null,
+        sessionId: null,
+        kind: 'configure-suggest',
+        model: msg.model,
+        startedAt,
+        tokens: usage.tokensFromUsage(msg.usage),
+        ok: true,
+        stopReason: msg.stop_reason,
+        features: {
+          promptChars: prompt.length,
+          label: labelName,
+          propertyCount: properties.length,
+        },
+      })
+    )
 
     const raw = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : ''
     // Strip optional markdown code fences

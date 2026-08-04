@@ -58,6 +58,13 @@ export const IPC = {
 
   // AI configuration suggestion
   CONFIGURE_SUGGEST: 'configure:suggest',
+
+  // LLM usage, cost, and estimation
+  USAGE_ESTIMATE: 'usage:estimate',
+  USAGE_SESSION: 'usage:session',
+  USAGE_LIFETIME: 'usage:lifetime',
+  USAGE_PRICING: 'usage:pricing',
+  USAGE_CALL: 'usage:call', // main→renderer push, one per completed LLM call
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

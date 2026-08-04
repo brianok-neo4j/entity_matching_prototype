@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useStore } from '../store'
+import { formatUsd, summarizeTokens } from '../lib/usage'
+import type { UsageTotals } from '../../../shared/types'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -18,8 +20,46 @@ export default function AssistantPanel({ sessionId, pairId, suggestedPrompts }: 
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [spend, setSpend] = useState<UsageTotals | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Refetch on open as well as on mount: auto-classify spends against this
+  // session without emitting per-call events, so the total can move while the
+  // panel is collapsed.
+  useEffect(() => {
+    if (assistantOpen) window.api.usage.session(sessionId).then((s) => setSpend(s.totals))
+  }, [sessionId, assistantOpen])
+
+  useEffect(() => {
+    const off = window.api.usage.onCall((record) => {
+      if (record.sessionId !== sessionId) return
+      // Accumulate locally rather than refetching on every chat turn.
+      setSpend((prev) =>
+        prev === null
+          ? null
+          : {
+              ...prev,
+              callCount: prev.callCount + 1,
+              inputTokens: prev.inputTokens + record.tokens.inputTokens,
+              outputTokens: prev.outputTokens + record.tokens.outputTokens,
+              cacheReadInputTokens:
+                prev.cacheReadInputTokens + record.tokens.cacheReadInputTokens,
+              cacheCreationInputTokens:
+                prev.cacheCreationInputTokens + record.tokens.cacheCreationInputTokens,
+              totalTokens:
+                prev.totalTokens +
+                record.tokens.inputTokens +
+                record.tokens.outputTokens +
+                record.tokens.cacheReadInputTokens +
+                record.tokens.cacheCreationInputTokens,
+              costUsd: prev.costUsd + record.cost.totalUsd,
+              unpricedCallCount: prev.unpricedCallCount + (record.cost.priced ? 0 : 1),
+            }
+      )
+    })
+    return () => { off() }
+  }, [sessionId])
 
   useEffect(() => {
     const offChunk = window.api.assistant.onChunk((chunk) => {
@@ -88,6 +128,16 @@ export default function AssistantPanel({ sessionId, pairId, suggestedPrompts }: 
           ›
         </button>
       </div>
+
+      {spend !== null && spend.callCount > 0 && (
+        <div
+          className="px-4 py-2 border-b border-gray-800 text-[11px] text-gray-500 flex items-center justify-between"
+          title={`${spend.callCount} Claude call${spend.callCount === 1 ? '' : 's'} in this session · ${summarizeTokens(spend)}`}
+        >
+          <span>Session spend</span>
+          <span className="text-gray-300 font-medium">{formatUsd(spend.costUsd)}</span>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 min-h-0">

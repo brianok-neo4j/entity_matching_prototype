@@ -2,7 +2,8 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getSettings } from './settings-service'
 import { loadSession, listPairs } from './session-service'
 import { getCachedSchema } from './schema-service'
-import type { CandidatePair, ScoreDistributions, Session } from '../shared/types'
+import { recordCall, tokensFromUsage, emptyTokens } from './usage-service'
+import type { CandidatePair, LlmCallRecord, ScoreDistributions, Session } from '../shared/types'
 
 function buildSystemPrompt(
   session: Session,
@@ -59,7 +60,8 @@ export async function sendMessage(
   pairId: string | null,
   userMessage: string,
   onChunk: (chunk: string) => void,
-  onDone: () => void
+  onDone: () => void,
+  onUsage?: (record: LlmCallRecord) => void
 ): Promise<void> {
   const settings = getSettings()
   if (!settings.anthropicApiKey) throw new Error('No Anthropic API key configured')
@@ -74,18 +76,64 @@ export async function sendMessage(
 
   const client = new Anthropic({ apiKey: settings.anthropicApiKey })
   const model = settings.assistantModel ?? 'claude-haiku-4-5-20251001'
+  const systemPrompt = buildSystemPrompt(session, distributions, currentPair ?? null)
+  const startedAt = Date.now()
 
-  const stream = await client.messages.stream({
-    model,
-    max_tokens: 1024,
-    system: buildSystemPrompt(session, distributions, currentPair ?? null),
-    messages: [{ role: 'user', content: userMessage }],
-  })
+  const report = (record: LlmCallRecord): void => onUsage?.(record)
 
-  for await (const chunk of stream) {
-    if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
-      onChunk(chunk.delta.text)
+  try {
+    const stream = await client.messages.stream({
+      model,
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }],
+    })
+
+    for await (const chunk of stream) {
+      if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+        onChunk(chunk.delta.text)
+      }
     }
+
+    // Usage only lands on the accumulated final message — the deltas don't carry it.
+    const final = await stream.finalMessage()
+    report(
+      recordCall({
+        jobId: null,
+        sessionId,
+        kind: 'assistant-chat',
+        model: final.model,
+        startedAt,
+        tokens: tokensFromUsage(final.usage),
+        ok: true,
+        stopReason: final.stop_reason,
+        features: {
+          systemPromptChars: systemPrompt.length,
+          userMessageChars: userMessage.length,
+          hasPair: pairId ? 1 : 0,
+        },
+      })
+    )
+  } catch (err) {
+    report(
+      recordCall({
+        jobId: null,
+        sessionId,
+        kind: 'assistant-chat',
+        model,
+        startedAt,
+        tokens: emptyTokens(),
+        ok: false,
+        error: (err as Error).message,
+        features: {
+          systemPromptChars: systemPrompt.length,
+          userMessageChars: userMessage.length,
+          hasPair: pairId ? 1 : 0,
+        },
+      })
+    )
+    throw err
   }
+
   onDone()
 }

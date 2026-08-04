@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
-import type { AppSettings } from '../../../shared/types'
+import type { AppSettings, ModelPricing } from '../../../shared/types'
 
 const MODELS = [
   'claude-haiku-4-5-20251001',
@@ -17,16 +17,64 @@ export default function SettingsScreen() {
     excludedLabels: ['__Entity__', '__KGBuilder__', 'Document', 'Chunk', '_Bloom_Perspective_', '_Bloom_Scene_'],
     theme: 'dark',
     useNeo4jStorage: false,
+    pricingOverrides: {},
   })
   const [saving, setSaving] = useState(false)
   const [newLabel, setNewLabel] = useState('')
+  const [pricing, setPricing] = useState<ModelPricing[]>([])
 
   useEffect(() => {
     window.api.settings.get().then((s) => {
       setForm(s)
       setSettings(s)
     })
+    window.api.usage.pricing().then(setPricing)
   }, [])
+
+  // Cache rates are derived from the input rate, so an override only carries the
+  // two rates the user can meaningfully set.
+  function setRate(
+    modelId: string,
+    field: 'inputPerMTok' | 'outputPerMTok',
+    raw: string
+  ): void {
+    const value = Number(raw)
+    if (!Number.isFinite(value) || value < 0) return
+    setForm((prev) => ({
+      ...prev,
+      pricingOverrides: {
+        ...prev.pricingOverrides,
+        [modelId]: { ...prev.pricingOverrides[modelId], [field]: value },
+      },
+    }))
+    setPricing((prev) =>
+      prev.map((p) =>
+        p.modelId === modelId
+          ? {
+              ...p,
+              [field]: value,
+              overridden: true,
+              ...(field === 'inputPerMTok'
+                ? {
+                    cacheWrite5mPerMTok: value * 1.25,
+                    cacheWrite1hPerMTok: value * 2,
+                    cacheReadPerMTok: value * 0.1,
+                  }
+                : {}),
+            }
+          : p
+      )
+    )
+  }
+
+  async function resetPricing(): Promise<void> {
+    const next = { ...form, pricingOverrides: {} }
+    setForm(next)
+    await window.api.settings.set(next)
+    setSettings(next)
+    setPricing(await window.api.usage.pricing())
+    addToast('Pricing reset to bundled rates', 'success')
+  }
 
   async function save() {
     setSaving(true)
@@ -126,6 +174,62 @@ export default function SettingsScreen() {
               onKeyDown={(e) => e.key === 'Enter' && addLabel()}
             />
             <button onClick={addLabel} disabled={!newLabel.trim()} className="btn-secondary text-xs px-3">Add</button>
+          </div>
+        </section>
+
+        {/* Token pricing */}
+        <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Token Pricing</h2>
+            {Object.keys(form.pricingOverrides).length > 0 && (
+              <button onClick={resetPricing} className="text-xs text-gray-500 hover:text-gray-300">
+                Reset to bundled rates
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-gray-500">
+            USD per million tokens, used to cost every Claude call. Anthropic publishes no pricing
+            API, so these ship with the app — edit a rate here if it has changed. Cache-write and
+            cache-read rates are derived from the input rate (1.25× / 2× for 5m / 1h writes, 0.1×
+            for reads).
+          </p>
+          <div className="space-y-1">
+            <div className="grid grid-cols-[1fr_5rem_5rem_7rem] gap-2 text-[11px] text-gray-600 uppercase tracking-wide px-1">
+              <span>Model</span>
+              <span className="text-right">Input</span>
+              <span className="text-right">Output</span>
+              <span className="text-right">Cache read/write</span>
+            </div>
+            {pricing.map((p) => (
+              <div
+                key={p.modelId}
+                className="grid grid-cols-[1fr_5rem_5rem_7rem] gap-2 items-center px-1 py-1 rounded hover:bg-gray-850"
+              >
+                <span className="text-xs text-gray-300 truncate" title={p.modelId}>
+                  {p.displayName}
+                  {p.overridden && <span className="ml-1 text-amber-500" title="Overridden">•</span>}
+                </span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={p.inputPerMTok}
+                  onChange={(e) => setRate(p.modelId, 'inputPerMTok', e.target.value)}
+                  className="input py-1 text-xs text-right"
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={p.outputPerMTok}
+                  onChange={(e) => setRate(p.modelId, 'outputPerMTok', e.target.value)}
+                  className="input py-1 text-xs text-right"
+                />
+                <span className="text-xs text-gray-600 text-right tabular-nums">
+                  {p.cacheReadPerMTok.toFixed(2)} / {p.cacheWrite5mPerMTok.toFixed(2)}
+                </span>
+              </div>
+            ))}
           </div>
         </section>
 
