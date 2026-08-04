@@ -1,9 +1,24 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import type { ReactElement } from 'react'
 import { useStore } from '../store'
 import AssistantPanel from '../components/AssistantPanel'
 import NodeRelationships from '../components/NodeRelationships'
 import SourcePassages from '../components/SourcePassages'
-import type { MergeGroup, MergeApplyResult, Verdict } from '../../../shared/types'
+import {
+  formatUsd,
+  formatUsdRange,
+  formatTokens,
+  formatDuration,
+  describeBasis,
+  summarizeTokens,
+} from '../lib/usage'
+import type {
+  MergeGroup,
+  MergeApplyResult,
+  Verdict,
+  JobEstimate,
+  UsageTotals,
+} from '../../../shared/types'
 
 type VerdictFilter = 'all' | 'pending' | 'duplicate' | 'distinct'
 
@@ -178,6 +193,80 @@ function MergeModal({ sessionId, onClose, onApplied, onGoToSessions, addToast }:
   )
 }
 
+// ── Cost estimate / spend readouts ────────────────────────────────────────────
+
+function EstimatePanel({
+  estimate,
+  loading,
+}: {
+  estimate: JobEstimate | null
+  loading: boolean
+}): ReactElement {
+  if (loading) {
+    return <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 text-xs text-gray-500">Estimating cost…</div>
+  }
+  if (!estimate || estimate.basis === 'none' || estimate.unitCount === 0) {
+    return (
+      <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 text-xs text-gray-500">
+        No cost estimate available yet — run once and future runs will be estimated from it.
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 space-y-2">
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs uppercase tracking-wide text-gray-500">Estimated cost</span>
+        <span className="text-lg font-semibold text-white">
+          {estimate.priced ? formatUsdRange(estimate.costLowUsd, estimate.costHighUsd) : '—'}
+        </span>
+      </div>
+      <div className="text-xs text-gray-500 space-y-0.5">
+        <p>
+          ~{formatTokens(estimate.inputTokens)} input · ~{formatTokens(estimate.outputTokens)} output
+          across {estimate.unitCount} call{estimate.unitCount === 1 ? '' : 's'} on{' '}
+          <span className="text-gray-400">{estimate.model}</span>
+        </p>
+        {estimate.durationMsEstimate !== null && (
+          <p>~{formatDuration(estimate.durationMsEstimate)} to run</p>
+        )}
+        <p className="text-gray-600">{describeBasis(estimate)}</p>
+        {!estimate.priced && (
+          <p className="text-amber-500">
+            No pricing on record for this model — set a rate in Settings to see cost.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SpendRow({
+  spend,
+  estimate,
+  label,
+}: {
+  spend: UsageTotals | null
+  estimate: JobEstimate | null
+  label: string
+}): ReactElement | null {
+  if (!spend || spend.callCount === 0) return null
+  return (
+    <div className="flex items-baseline justify-between border-t border-gray-800 pt-3 text-xs">
+      <div className="text-gray-500">
+        <span className="text-gray-400">{label}</span>
+        <span className="ml-2">{summarizeTokens(spend)}</span>
+      </div>
+      <div className="text-right">
+        <span className="text-sm font-semibold text-white">{formatUsd(spend.costUsd)}</span>
+        {estimate?.priced && estimate.costUsd > 0 && (
+          <span className="ml-2 text-gray-600">est. {formatUsd(estimate.costUsd)}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── AI Auto-classify Modal ────────────────────────────────────────────────────
 
 interface AutoClassifyModalProps {
@@ -192,7 +281,9 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
   const [progress, setProgress] = useState<{ completed: number; total: number; lastVerdict: string | null }>({
     completed: 0, total: pendingCount, lastVerdict: null,
   })
-  const [done, setDone] = useState(false)
+  const [phase, setPhase] = useState<'estimating' | 'ready' | 'running' | 'done'>('estimating')
+  const [estimate, setEstimate] = useState<JobEstimate | null>(null)
+  const [spend, setSpend] = useState<UsageTotals | null>(null)
   const [cancelled, setCancelled] = useState(false)
   const [classified, setClassified] = useState(0)
   const [cancelling, setCancelling] = useState(false)
@@ -203,35 +294,45 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
     // doesn't leave us without a listener when progress events arrive.
     const off = window.api.pairs.onAutoClassifyProgress((data) => {
       setProgress({ completed: data.completed, total: data.total, lastVerdict: data.verdict })
+      setSpend(data.usage)
     })
-
-    if (!startedRef.current) {
-      startedRef.current = true
-      window.api.pairs.autoClassify(sessionId)
-        .then((result) => {
-          setClassified(result.classified)
-          setCancelled(result.cancelled)
-          setDone(true)
-          if (result.cancelled) {
-            addToast(`Cancelled after classifying ${result.classified} pairs`, 'info')
-          } else {
-            addToast(`AI classified ${result.classified} of ${pendingCount} pairs`, 'success')
-          }
-        })
-        .catch((err) => {
-          addToast((err as Error).message, 'error')
-          onClose()
-        })
-    }
-
     return () => { off() }
   }, [])
+
+  useEffect(() => {
+    window.api.usage.estimate('auto-classify', sessionId)
+      .then((e) => { setEstimate(e); setPhase('ready') })
+      .catch(() => setPhase('ready'))
+  }, [sessionId])
+
+  function handleStart(): void {
+    if (startedRef.current) return
+    startedRef.current = true
+    setPhase('running')
+    window.api.pairs.autoClassify(sessionId)
+      .then((result) => {
+        setClassified(result.classified)
+        setCancelled(result.cancelled)
+        setSpend(result.usage)
+        setPhase('done')
+        if (result.cancelled) {
+          addToast(`Cancelled after classifying ${result.classified} pairs`, 'info')
+        } else {
+          addToast(`AI classified ${result.classified} of ${pendingCount} pairs`, 'success')
+        }
+      })
+      .catch((err) => {
+        addToast((err as Error).message, 'error')
+        onClose()
+      })
+  }
 
   function handleCancel() {
     setCancelling(true)
     window.api.pairs.cancelAutoClassify()
   }
 
+  const done = phase === 'done'
   const pct = progress.total > 0 ? Math.round((progress.completed / progress.total) * 100) : 0
 
   return (
@@ -243,7 +344,15 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
         </div>
 
         <div className="px-6 py-5 space-y-5">
-          {!done ? (
+          {phase === 'estimating' || phase === 'ready' ? (
+            <>
+              <p className="text-sm text-gray-400">
+                {pendingCount} pending pair{pendingCount === 1 ? '' : 's'} will each be sent to
+                Claude as one request.
+              </p>
+              <EstimatePanel estimate={estimate} loading={phase === 'estimating'} />
+            </>
+          ) : !done ? (
             <>
               <p className="text-sm text-gray-400">
                 {cancelling
@@ -270,6 +379,7 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
                   </span>
                 </p>
               )}
+              <SpendRow spend={spend} estimate={estimate} label="Spent so far" />
             </>
           ) : cancelled ? (
             <>
@@ -282,6 +392,7 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
               <p className="text-xs text-gray-500">
                 Partial results are saved. You can review them now or run AI classify again to continue.
               </p>
+              <SpendRow spend={spend} estimate={estimate} label="Total spend" />
             </>
           ) : (
             <>
@@ -295,12 +406,25 @@ function AutoClassifyModal({ sessionId, pendingCount, onClose, onDone, addToast 
                 Each pair has been given a verdict and an <span className="text-gray-400">[AI]</span> note
                 explaining the reasoning. You can override any decision by clicking Duplicate / Distinct.
               </p>
+              <SpendRow spend={spend} estimate={estimate} label="Total spend" />
             </>
           )}
         </div>
 
         <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-800">
-          {!done && (
+          {(phase === 'estimating' || phase === 'ready') && (
+            <>
+              <button onClick={onClose} className="btn-secondary">Cancel</button>
+              <button
+                onClick={handleStart}
+                disabled={phase !== 'ready' || pendingCount === 0}
+                className="btn-primary disabled:opacity-40"
+              >
+                Start classification
+              </button>
+            </>
+          )}
+          {phase === 'running' && (
             <button
               onClick={handleCancel}
               disabled={cancelling}

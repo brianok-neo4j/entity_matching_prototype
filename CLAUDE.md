@@ -35,6 +35,24 @@ Single Zustand store at `app/src/renderer/src/store/index.ts`. Screen navigation
 2. Register it in `app/src/main/metrics/registry.ts`.
 3. Add its UI definition to `app/src/renderer/src/lib/metrics.ts`.
 
+### LLM usage, cost, and estimation
+
+Every Claude call in the app is ledgered. Three call sites exist — auto-classify
+(`main/index.ts`), config suggestion (`main/index.ts`), and assistant chat
+(`main/assistant-service.ts`) — and each wraps its call in
+`usage.recordCall(...)`. **A new LLM call site must do the same**, or its spend
+becomes invisible.
+
+- `app/src/main/pricing.ts` — bundled per-model rate catalog. Cache-write and
+  cache-read rates are *derived* from the input rate (1.25×/2×/0.1×), so an
+  override only sets input and output. Bump `PRICING_VERSION` when rates change.
+- `app/src/main/usage-service.ts` — `llm_calls` (one row per API call) and
+  `llm_jobs` (one row per multi-call run) tables, plus `estimateJob()`.
+- Loop-driven jobs bracket their calls with `startJob` / `finishJob` so the
+  estimator can derive per-unit token counts; one-shot calls pass `jobId: null`.
+- Estimation falls back through: prior runs on this model → prior runs on any
+  model → prompt-character extrapolation → no estimate.
+
 ## Key constraints and gotchas
 
 **React 18 StrictMode double-mount** — effects run twice in development. Any one-shot IPC listener or API call must be guarded with a `startedRef`:
@@ -58,6 +76,19 @@ useEffect(() => {
 **Re-run compute** — detected via `session.status === 'reviewing' | 'merges-applied'` in ConfigureScreen. Uses `session.save` instead of `session.create`. The `upsertPairs` SQL uses `ON CONFLICT(id) DO UPDATE SET` but intentionally does **not** overwrite `verdict`, `decided_at`, or `note` — existing verdicts are preserved across recomputes.
 
 **Session status** — the status field must be set explicitly when saving. `ComputeScreen.proceed()` must include `status: 'reviewing'` in the object passed to `session.save`; omitting it silently resets status to the previous value.
+
+**Usage ledger has no FK to sessions** — `llm_calls.session_id` and
+`llm_jobs.session_id` are deliberately unconstrained. Adding `REFERENCES
+sessions(id) ON DELETE CASCADE` would silently erase lifetime spend history when
+a session is deleted.
+
+**Don't aggregate usage per loop iteration** — `getSessionUsage()` scans all
+rows for the session. Calling it once per pair in auto-classify is O(n²). Use
+`getJobTotals(jobId)` (primary-key lookup) for live progress.
+
+**Failed LLM calls are still recorded** — with zero tokens and `ok = 0`. Jobs
+finished as `'failed'`, or with `units_completed = 0`, are excluded from
+`estimateJob()` samples so a broken run can't skew future estimates.
 
 **Settings loading** — `App.tsx` loads settings on mount via `window.api.settings.get().then(setSettings)`. The `.then()` call must not be dropped; if it is, `store.settings` stays `null` and any feature gated on `settings.anthropicKey` will be permanently disabled.
 

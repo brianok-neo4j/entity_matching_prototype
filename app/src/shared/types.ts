@@ -187,6 +187,95 @@ export interface AppSettings {
   excludedLabels: string[]
   theme: 'light' | 'dark' | 'system'
   useNeo4jStorage: boolean
+  pricingOverrides: PricingOverrides
+}
+
+// ─── LLM usage, cost, and telemetry ──────────────────────────────────────────
+
+export interface ModelPricing {
+  modelId: string
+  displayName: string
+  inputPerMTok: number
+  outputPerMTok: number
+  cacheWrite5mPerMTok: number
+  cacheWrite1hPerMTok: number
+  cacheReadPerMTok: number
+  overridden?: boolean
+}
+
+export type PricingOverrides = Record<string, Partial<ModelPricing>>
+
+export interface TokenCounts {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  cacheCreation5mTokens?: number
+  cacheCreation1hTokens?: number
+}
+
+export interface CostBreakdown {
+  inputUsd: number
+  outputUsd: number
+  cacheWriteUsd: number
+  cacheReadUsd: number
+  totalUsd: number
+  priced: boolean
+  pricingVersion: string
+}
+
+export type LlmJobKind = 'auto-classify' | 'configure-suggest' | 'assistant-chat'
+
+export interface LlmCallRecord {
+  id: string
+  jobId: string | null
+  sessionId: string | null
+  kind: LlmJobKind
+  model: string
+  startedAt: number
+  durationMs: number
+  tokens: TokenCounts
+  cost: CostBreakdown
+  ok: boolean
+  error: string | null
+  stopReason: string | null
+  features: Record<string, number | string>
+}
+
+export interface UsageTotals {
+  callCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  totalTokens: number
+  costUsd: number
+  unpricedCallCount: number
+}
+
+export interface UsageSummary {
+  totals: UsageTotals
+  byKind: { kind: LlmJobKind; totals: UsageTotals }[]
+  byModel: { model: string; totals: UsageTotals }[]
+}
+
+export interface JobEstimate {
+  kind: LlmJobKind
+  model: string
+  unitCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  costUsd: number
+  costLowUsd: number
+  costHighUsd: number
+  durationMsEstimate: number | null
+  // 'history' = fitted from prior runs of this kind on this model.
+  // 'history-other-model' = fitted from this kind on a different model.
+  // 'prompt-size' = cold start, extrapolated from the prompts we are about to send.
+  basis: 'history' | 'history-other-model' | 'prompt-size' | 'none'
+  sampleSize: number
+  priced: boolean
 }
 
 // ─── Audit ───────────────────────────────────────────────────────────────────

@@ -13,7 +13,7 @@ The tool guides you through a four-step workflow:
 1. **Connect** — Save a Bolt connection profile (credentials stored in the OS keychain via keytar, never in plaintext). Test connectivity and discover the graph schema automatically.
 2. **Configure** — Select an entity label, choose which properties to compare, assign similarity metrics with per-metric thresholds, and set a surfacing rule that controls which pairs enter the review queue. If an Anthropic API key is set, the **✦ Ask AI to suggest** button will recommend fields, metrics, and thresholds based on the property names and sample values, with a per-field explanation of the reasoning.
 3. **Compute** — Run pairwise similarity scoring across all nodes. Progress is streamed per metric. After completion, interactive score-distribution histograms let you adjust thresholds before proceeding.
-4. **Review** — Work through the pair queue, mark each as **Duplicate** or **Distinct**, add notes, inspect relationships and source passages, and apply merges when ready. The **✦ AI Classify…** button sends all pending pairs to Claude for automated Duplicate/Distinct recommendations with reasoning stored in the Notes field (cancelable mid-run). After applying merges, choose to return to the Session list or stay in review. Use **Re-run Compute →** to run a second scoring pass on the same session (e.g. to surface transitive duplicates after merging) — existing verdicts are preserved.
+4. **Review** — Work through the pair queue, mark each as **Duplicate** or **Distinct**, add notes, inspect relationships and source passages, and apply merges when ready. The **✦ AI Classify…** button previews the estimated token use and cost, then — once you confirm — sends all pending pairs to Claude for automated Duplicate/Distinct recommendations with reasoning stored in the Notes field (cancelable mid-run, with running spend shown as it goes). After applying merges, choose to return to the Session list or stay in review. Use **Re-run Compute →** to run a second scoring pass on the same session (e.g. to surface transitive duplicates after merging) — existing verdicts are preserved.
 
 Sessions are persisted in SQLite. Verdicts are preserved across recomputes — only scores and node snapshots are refreshed.
 
@@ -87,6 +87,18 @@ The tool assumes the graph was built with neo4j-graphrag-python and understands 
 
 ---
 
+## Token use and cost
+
+Every call to Claude is recorded — input, output, cache-read, and cache-write tokens are tracked separately, priced, and accumulated over the lifetime of the app.
+
+- **Before a job runs**, the AI Classify dialog shows the estimated token use and a cost range, along with what the estimate is based on. The first run on a new setup extrapolates from the size of the prompts about to be sent; later runs are fitted from the token counts of previous runs, so the estimate tightens with use.
+- **During a job**, spend updates per pair alongside the progress bar.
+- **After any call**, the cost is shown where the work happened — under the AI suggestion on the Configure screen, and as session spend in the assistant panel.
+
+Costs are computed from a per-model rate table bundled with the app. Anthropic publishes no pricing API, so if a rate changes you can correct it under **Settings → Token Pricing** without waiting for a release; cache-write and cache-read rates are derived from the input rate automatically. Each recorded call is stamped with the pricing version in force at the time, so correcting a rate does not rewrite historical costs.
+
+---
+
 ## Setup
 
 ### Prerequisites
@@ -131,6 +143,7 @@ Open **Settings** from the top nav bar.
 | Anthropic API Key | Powers three features: the assistant panel (chatbot), **AI Auto-classify** (bulk pair verdicts), and **AI field/metric suggestion** on the Configure screen. |
 | OpenAI API Key | Required only when using the OpenAI semantic-cosine backend. |
 | Assistant Model | Defaults to `claude-haiku-4-5-20251001`. Can be upgraded to Sonnet or Opus. |
+| Token Pricing | Per-million-token input and output rates used to cost every Claude call. Ships with current rates; edit one if it changes, or reset to the bundled values. |
 | Hidden Labels | Labels excluded from schema discovery. Defaults to GraphRAG infrastructure labels. |
 | Neo4j Storage | Write pair verdicts and merge audit records back into the graph as first-class nodes. |
 
@@ -141,6 +154,7 @@ Open **Settings** from the top nav bar.
 | What | Where |
 |---|---|
 | Sessions, pairs, scores, audit records | `~/Library/Application Support/er-tool/er-sessions.db` (macOS) |
+| LLM call ledger (tokens, cost, latency) | Same SQLite database. Retained when a session is deleted, so lifetime spend stays accurate. |
 | Connection passwords | OS keychain via keytar |
 | All other settings | Same SQLite database |
 
@@ -159,6 +173,8 @@ src/
     metric-runner.ts        Orchestrates metrics, surfacing, distributions
     merge-executor.ts       Union-find, APOC/fallback merge, audit
     assistant-service.ts    Anthropic SDK streaming
+    usage-service.ts        LLM call/job ledger, aggregates, job estimation
+    pricing.ts              Per-model token rate catalog and cost computation
     neo4j-storage.ts        Optional graph write-back
     metrics/                Eight pluggable MetricModule implementations
   preload/           Typed contextBridge (window.api)
@@ -169,6 +185,7 @@ src/
                       SourcePassages, Toast
     store/            Zustand global state
     lib/metrics.ts    Metric definitions for the UI
+    lib/usage.ts      Cost and token formatting helpers
   shared/
     types.ts          All shared TypeScript types
     ipc-channels.ts   Typed IPC channel constants

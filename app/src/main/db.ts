@@ -68,7 +68,54 @@ function migrate(db: Database.Database): void {
       value TEXT NOT NULL
     );
 
+    -- No FK on session_id: usage rows are the lifetime cost ledger and must
+    -- outlive the sessions that produced them.
+    CREATE TABLE IF NOT EXISTS llm_jobs (
+      id                       TEXT PRIMARY KEY,
+      session_id               TEXT,
+      kind                     TEXT NOT NULL,
+      model                    TEXT NOT NULL,
+      status                   TEXT NOT NULL DEFAULT 'running',
+      started_at               INTEGER NOT NULL,
+      ended_at                 INTEGER,
+      unit_count               INTEGER NOT NULL DEFAULT 0,
+      units_completed          INTEGER NOT NULL DEFAULT 0,
+      call_count               INTEGER NOT NULL DEFAULT 0,
+      input_tokens             INTEGER NOT NULL DEFAULT 0,
+      output_tokens            INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens    INTEGER NOT NULL DEFAULT 0,
+      cost_usd                 REAL    NOT NULL DEFAULT 0,
+      features_json            TEXT    NOT NULL DEFAULT '{}'
+    );
+
+    CREATE TABLE IF NOT EXISTS llm_calls (
+      id                       TEXT PRIMARY KEY,
+      job_id                   TEXT,
+      session_id               TEXT,
+      kind                     TEXT NOT NULL,
+      model                    TEXT NOT NULL,
+      started_at               INTEGER NOT NULL,
+      duration_ms              INTEGER NOT NULL DEFAULT 0,
+      input_tokens             INTEGER NOT NULL DEFAULT 0,
+      output_tokens            INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens    INTEGER NOT NULL DEFAULT 0,
+      cost_usd                 REAL    NOT NULL DEFAULT 0,
+      priced                   INTEGER NOT NULL DEFAULT 1,
+      pricing_version          TEXT    NOT NULL,
+      ok                       INTEGER NOT NULL DEFAULT 1,
+      error                    TEXT,
+      stop_reason              TEXT,
+      features_json            TEXT    NOT NULL DEFAULT '{}'
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pairs_session  ON pairs(session_id);
+    CREATE INDEX IF NOT EXISTS idx_calls_session  ON llm_calls(session_id);
+    CREATE INDEX IF NOT EXISTS idx_calls_job      ON llm_calls(job_id);
+    CREATE INDEX IF NOT EXISTS idx_calls_kind     ON llm_calls(kind, model, started_at);
+    CREATE INDEX IF NOT EXISTS idx_jobs_kind      ON llm_jobs(kind, model, status, started_at);
+    CREATE INDEX IF NOT EXISTS idx_jobs_session   ON llm_jobs(session_id);
     CREATE INDEX IF NOT EXISTS idx_pairs_verdict  ON pairs(session_id, verdict);
     CREATE INDEX IF NOT EXISTS idx_scores_pair    ON pair_scores(pair_id);
     CREATE INDEX IF NOT EXISTS idx_audit_session  ON audit_records(session_id);

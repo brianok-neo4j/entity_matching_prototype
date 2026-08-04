@@ -12,6 +12,12 @@ import type {
   ScoreDistributions,
   AppSettings,
   AISuggestion,
+  JobEstimate,
+  LlmCallRecord,
+  LlmJobKind,
+  ModelPricing,
+  UsageSummary,
+  UsageTotals,
 } from '../shared/types'
 
 // Push-event listener helpers
@@ -70,7 +76,11 @@ const api = {
     export: (sessionId: string, format: 'csv' | 'json', verdictFilter: string) =>
       ipcRenderer.invoke(IPC.PAIRS_EXPORT, sessionId, format, verdictFilter) as Promise<string>,
     autoClassify: (sessionId: string) =>
-      ipcRenderer.invoke(IPC.PAIRS_AUTO_CLASSIFY, sessionId) as Promise<{ classified: number; cancelled: boolean }>,
+      ipcRenderer.invoke(IPC.PAIRS_AUTO_CLASSIFY, sessionId) as Promise<{
+        classified: number
+        cancelled: boolean
+        usage: UsageTotals
+      }>,
     cancelAutoClassify: () =>
       ipcRenderer.invoke(IPC.PAIRS_AUTO_CLASSIFY_CANCEL) as Promise<void>,
     onAutoClassifyProgress: (cb: (data: {
@@ -79,6 +89,7 @@ const api = {
       note: string | null
       completed: number
       total: number
+      usage: UsageTotals
     }) => void) => on(IPC.PAIRS_AUTO_CLASSIFY_PROGRESS, cb as never),
   },
 
@@ -120,6 +131,17 @@ const api = {
   settings: {
     get: () => ipcRenderer.invoke(IPC.SETTINGS_GET) as Promise<AppSettings>,
     set: (s: Partial<AppSettings>) => ipcRenderer.invoke(IPC.SETTINGS_SET, s) as Promise<void>,
+  },
+
+  // ── LLM usage, cost, and estimation ───────────────────────────────────────────
+  usage: {
+    estimate: (kind: LlmJobKind, sessionId: string | null) =>
+      ipcRenderer.invoke(IPC.USAGE_ESTIMATE, kind, sessionId) as Promise<JobEstimate>,
+    session: (sessionId: string) =>
+      ipcRenderer.invoke(IPC.USAGE_SESSION, sessionId) as Promise<UsageSummary>,
+    lifetime: () => ipcRenderer.invoke(IPC.USAGE_LIFETIME) as Promise<UsageSummary>,
+    pricing: () => ipcRenderer.invoke(IPC.USAGE_PRICING) as Promise<ModelPricing[]>,
+    onCall: (cb: (record: LlmCallRecord) => void) => on(IPC.USAGE_CALL, cb as never),
   },
 
   // ── AI configuration suggestion ───────────────────────────────────────────────

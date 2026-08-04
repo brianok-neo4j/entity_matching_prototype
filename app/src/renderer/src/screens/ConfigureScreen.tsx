@@ -1,7 +1,14 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
 import { METRICS, suggestMetrics, getMetricDef } from '../lib/metrics'
-import type { LabelMeta, FieldConfig, MetricConfig, SurfacingRule } from '../../../shared/types'
+import { formatUsd, summarizeTokens } from '../lib/usage'
+import type {
+  LabelMeta,
+  FieldConfig,
+  MetricConfig,
+  SurfacingRule,
+  LlmCallRecord,
+} from '../../../shared/types'
 
 type Step = 'label' | 'fields' | 'surfacing'
 
@@ -35,8 +42,16 @@ export default function ConfigureScreen() {
   const [aiSuggesting, setAiSuggesting] = useState(false)
   const [aiExplanation, setAiExplanation] = useState<string | null>(null)
   const [aiReasons, setAiReasons] = useState<Record<string, string>>({})
+  const [aiCall, setAiCall] = useState<LlmCallRecord | null>(null)
 
   const hasApiKey = Boolean(settings?.anthropicApiKey)
+
+  useEffect(() => {
+    const off = window.api.usage.onCall((record) => {
+      if (record.kind === 'configure-suggest') setAiCall(record)
+    })
+    return () => { off() }
+  }, [])
 
   // Pre-populate from an existing session when coming from the review screen for a re-run
   const isRerun = Boolean(session && (session.status === 'reviewing' || session.status === 'merges-applied'))
@@ -383,6 +398,14 @@ export default function ConfigureScreen() {
                   </button>
                 </div>
                 <p className="text-sm text-indigo-200 leading-relaxed">{aiExplanation}</p>
+                {aiCall && (
+                  <p className="text-xs text-indigo-500 pt-1 border-t border-indigo-900">
+                    {aiCall.model} · {summarizeTokens(aiCall.tokens)} ·{' '}
+                    <span className="text-indigo-300">
+                      {aiCall.cost.priced ? formatUsd(aiCall.cost.totalUsd) : 'unpriced model'}
+                    </span>
+                  </p>
+                )}
               </div>
             )}
 
