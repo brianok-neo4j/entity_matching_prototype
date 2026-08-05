@@ -142,7 +142,7 @@ function MergeModal({ sessionId, onClose, onApplied, onGoToSessions, addToast }:
                       <span className="text-xs text-gray-500 ml-2">
                         {s === 'discard' && '— keep survivor properties only'}
                         {s === 'overwrite' && '— absorbed node properties overwrite survivor'}
-                        {s === 'combine' && '— merge lists (requires APOC)'}
+                        {s === 'combine' && '— merge lists (available on Aura; requires APOC on self-managed)'}
                       </span>
                     </div>
                   </label>

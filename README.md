@@ -70,10 +70,10 @@ The merge step uses **union-find** to group transitively connected duplicates in
 
 For each group, the survivor node is chosen by highest degree (most relationships). Two merge paths are available:
 
-- **APOC path** — a single `apoc.refactor.mergeNodes` call per group (recommended; requires APOC installed)
+- **APOC path** — a single `apoc.refactor.mergeNodes` call per group (recommended; available on Aura, requires APOC on self-managed)
 - **Fallback path** — a manual Cypher transaction that collects all relationships, re-creates them on the survivor, then `DETACH DELETE`s absorbed nodes (no APOC dependency)
 
-Property conflict strategy is selectable per merge pass: **discard** (keep survivor), **overwrite** (absorbed overwrites), or **combine** (merge arrays, APOC only).
+Property conflict strategy is selectable per merge pass: **discard** (keep survivor), **overwrite** (absorbed overwrites), or **combine** (merge arrays; needs the APOC path).
 
 Every merge pass writes an audit record to SQLite (and optionally to the graph as `ERAuditRecord` nodes).
 
@@ -115,7 +115,7 @@ Costs are computed from a per-model rate table bundled with the app. Anthropic p
 
 - Node.js 18+
 - A running Neo4j instance (5.x recommended)
-- APOC plugin (optional, enables the faster merge path and combine property strategy)
+- APOC Core — bundled with Aura, optional on self-managed. Enables the faster merge path and the combine property strategy; the tool falls back to plain Cypher without it.
 
 ### Install
 
