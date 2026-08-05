@@ -227,23 +227,51 @@ export function getCachedSchema(): SchemaModel | null {
   return _cached
 }
 
+const NUMERIC_TYPES = new Set(['LONG', 'INTEGER', 'DOUBLE', 'FLOAT', 'NUMBER'])
+const DATE_TYPES = new Set([
+  'DATE',
+  'DATETIME',
+  'LOCALDATETIME',
+  'ZONEDDATETIME',
+  'TIME',
+  'LOCALTIME',
+  'ZONEDTIME',
+  'DURATION',
+])
+
+// db.schema.nodeTypeProperties() reports Cypher type names, which on Neo4j 5+
+// carry a nullability suffix and may be wrapped in a list: "STRING NOT NULL",
+// "LIST<STRING NOT NULL> NOT NULL". Matching the bare Neo4j 4 spellings
+// ("String", "Long") therefore matched nothing, and every property in a modern
+// database was classified 'other'. Reduce to a bare element type first.
+function normalizeTypeName(raw: string): string {
+  let t = raw.toUpperCase().replace(/\bNOT\s+NULL\b/g, '')
+  const list = t.match(/^\s*LIST<(.+)>\s*$/)
+  if (list) t = list[1]
+  // A list of strings is still string-like for similarity purposes.
+  return t.replace(/\s+/g, '')
+}
+
 function inferKind(meta: PropertyMeta): PropertyKind {
-  const types = meta.types.map((t) => t.toLowerCase())
-  if (types.includes('long') || types.includes('double') || types.includes('float') || types.includes('integer')) {
-    return 'numeric'
-  }
-  if (types.includes('boolean')) return 'boolean'
-  if (types.includes('date') || types.includes('datetime') || types.includes('localdatetime')) return 'date'
+  const types = meta.types.map(normalizeTypeName).filter(Boolean)
+  if (types.some((t) => NUMERIC_TYPES.has(t))) return 'numeric'
+  if (types.includes('BOOLEAN')) return 'boolean'
+  if (types.some((t) => DATE_TYPES.has(t))) return 'date'
   // Only hard-return 'other' when we have explicit non-string type info.
   // Empty types (no schema constraints) falls through to sample-value heuristics.
-  if (types.length > 0 && !types.includes('string')) return 'other'
+  if (types.length > 0 && !types.includes('STRING')) return 'other'
 
   const samples = meta.sampleValues.filter((v) => typeof v === 'string') as string[]
   if (samples.length === 0) return 'name'
 
   const avgLen = samples.reduce((s, v) => s + v.length, 0) / samples.length
+  // Digits or punctuation suggest an identifier, but only without whitespace —
+  // otherwise product and aircraft names carrying a model number ("Boeing 737
+  // Max") read as identifiers and lose the token- and phonetic-based metrics
+  // that names need.
   const identifierPattern = /[\d.()/\\-]/
-  const identifierLike = samples.filter((s) => identifierPattern.test(s)).length / samples.length
+  const identifierLike =
+    samples.filter((s) => identifierPattern.test(s) && !/\s/.test(s)).length / samples.length
 
   if (avgLen < 20 && identifierLike > 0.5) return 'identifier'
   if (avgLen > 100) return 'text'
