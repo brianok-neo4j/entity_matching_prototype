@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
+import { DEFAULT_ASSISTANT_MODEL } from '../../../shared/constants'
 import type { AppSettings, ModelPricing } from '../../../shared/types'
 
 // Keeps a partially-typed number input from writing NaN into settings.
@@ -14,7 +15,7 @@ export default function SettingsScreen() {
   const [form, setForm] = useState<AppSettings>({
     anthropicApiKey: '',
     openaiApiKey: '',
-    assistantModel: 'claude-haiku-4-5-20251001',
+    assistantModel: DEFAULT_ASSISTANT_MODEL,
     excludedLabels: ['__Entity__', '__KGBuilder__', 'Document', 'Chunk', '_Bloom_Perspective_', '_Bloom_Scene_'],
     theme: 'dark',
     useNeo4jStorage: false,

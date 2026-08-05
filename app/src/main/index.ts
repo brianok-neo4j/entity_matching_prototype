@@ -108,7 +108,7 @@ async function buildClassifyPlan(
   const session = sessions.loadSession(sessionId)
   if (!session) throw new Error('Session not found')
 
-  const model = settings.assistantModel || 'claude-haiku-4-5-20251001'
+  const model = settings.assistantModel
   const batchSize = Math.max(1, settings.classifyBatchSize)
   const pending = allPairs.filter((p) => p.verdict === 'pending')
 
@@ -404,7 +404,7 @@ function registerIpc() {
 
     const { default: Anthropic } = await import('@anthropic-ai/sdk')
     const client = new Anthropic({ apiKey: settings.anthropicApiKey })
-    const model = settings.assistantModel || 'claude-haiku-4-5-20251001'
+    const model = settings.assistantModel
     const batchSize = Math.max(1, settings.classifyBatchSize)
 
     const plan = await buildClassifyPlan(client, sessionId, allPairs, settings)
@@ -569,7 +569,7 @@ function registerIpc() {
   ipcMain.handle(
     IPC.USAGE_ESTIMATE,
     (_, kind: LlmJobKind): JobEstimate => {
-      const model = getSettings().assistantModel || 'claude-haiku-4-5-20251001'
+      const model = getSettings().assistantModel
       return usage.estimateJob({ kind, model, unitCount: 1 })
     }
   )
@@ -619,7 +619,7 @@ Respond with ONLY valid JSON, no markdown fences, no extra text:
 
     const { default: Anthropic } = await import('@anthropic-ai/sdk')
     const client = new Anthropic({ apiKey: anthropicApiKey })
-    const model = assistantModel || 'claude-haiku-4-5-20251001'
+    const model = assistantModel
     const startedAt = Date.now()
 
     let msg: Awaited<ReturnType<typeof client.messages.create>>
