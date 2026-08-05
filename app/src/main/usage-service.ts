@@ -298,7 +298,8 @@ function jobSamples(
   }
   const rows = db
     .prepare(
-      `SELECT input_tokens, output_tokens, cache_read_tokens, units_completed, started_at, ended_at
+      `SELECT input_tokens, output_tokens, cache_read_tokens, units_completed, started_at,
+              ended_at, features_json
        FROM llm_jobs WHERE ${clauses.join(' AND ')}
        ORDER BY started_at DESC LIMIT ?`
     )
@@ -309,14 +310,27 @@ function jobSamples(
     units_completed: number
     started_at: number
     ended_at: number | null
+    features_json: string
   }[]
 
-  return rows.map((r) => ({
-    input: r.input_tokens / r.units_completed,
-    output: r.output_tokens / r.units_completed,
-    cacheRead: r.cache_read_tokens / r.units_completed,
-    durationMs: r.ended_at ? (r.ended_at - r.started_at) / r.units_completed : 0,
-  }))
+  return rows.map((r) => {
+    // Wall-clock depends on how many calls ran in parallel, so store duration
+    // normalised to serial-equivalent. The estimate divides by the concurrency
+    // the next run will actually use.
+    let ranAt = 1
+    try {
+      const f = JSON.parse(r.features_json) as { concurrency?: number }
+      if (typeof f.concurrency === 'number' && f.concurrency > 0) ranAt = f.concurrency
+    } catch {
+      // features are advisory; a malformed blob just means concurrency 1
+    }
+    return {
+      input: r.input_tokens / r.units_completed,
+      output: r.output_tokens / r.units_completed,
+      cacheRead: r.cache_read_tokens / r.units_completed,
+      durationMs: r.ended_at ? ((r.ended_at - r.started_at) * ranAt) / r.units_completed : 0,
+    }
+  })
 }
 
 function meanAndSpread(values: number[]): { mean: number; sd: number } {
@@ -339,6 +353,7 @@ export function estimateJob(input: {
   // Batching and caching. The prefix is a fixed cost per run rather than a
   // per-unit one, so it is modelled separately from the fitted per-unit terms.
   batchSize?: number
+  concurrency?: number
   prefixTokens?: number
   prefixCacheable?: boolean
 }): JobEstimate {
@@ -437,7 +452,10 @@ export function estimateJob(input: {
     costUsd: cost.totalUsd,
     costLowUsd: low.totalUsd,
     costHighUsd: high.totalUsd,
-    durationMsEstimate: perUnitDuration !== null ? Math.round(perUnitDuration * n) : null,
+    durationMsEstimate:
+      perUnitDuration !== null
+        ? Math.round((perUnitDuration * n) / Math.max(1, input.concurrency ?? 1))
+        : null,
     basis,
     sampleSize: samples.length,
     priced: cost.priced,

@@ -176,7 +176,7 @@ Open **Settings** from the top nav bar.
 | Anthropic API Key | Powers three features: the assistant panel (chatbot), **AI Auto-classify** (bulk pair verdicts), and **AI field/metric suggestion** on the Configure screen. |
 | OpenAI API Key | Required only when using the OpenAI semantic-cosine backend. |
 | Assistant Model | Powers the assistant, auto-classify, and field suggestions. Defaults to `claude-sonnet-5`. The list is generated from the pricing table, so every selectable model shows its current per-million-token rates. |
-| AI Auto-classify | Pairs per request (default 20), number of worked examples drawn from your own verdicts (default 20), and whether the shared prompt prefix is cached. |
+| AI Auto-classify | Pairs per request (default 20), worked examples drawn from your own verdicts (default 20), requests in parallel (default 4), and whether the shared prompt prefix is cached. |
 | Token Pricing | Per-million-token input and output rates used to cost every Claude call. Ships with current rates; edit one if it changes, or reset to the bundled values. |
 | Hidden Labels | Labels excluded from schema discovery. Defaults to GraphRAG infrastructure labels. |
 | Neo4j Storage | Write pair verdicts and merge audit records back into the graph as first-class nodes. |

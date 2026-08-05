@@ -5,6 +5,7 @@ import {
   DEFAULT_CLASSIFY_BATCH_SIZE,
   DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
   DEFAULT_CLASSIFY_CACHED_PREFIX,
+  DEFAULT_CLASSIFY_CONCURRENCY,
 } from '../../../shared/constants'
 import type { AppSettings, ModelPricing } from '../../../shared/types'
 
@@ -28,6 +29,7 @@ export default function SettingsScreen() {
     classifyBatchSize: DEFAULT_CLASSIFY_BATCH_SIZE,
     classifyFewShotCount: DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
     classifyCachedPrefix: DEFAULT_CLASSIFY_CACHED_PREFIX,
+    classifyConcurrency: DEFAULT_CLASSIFY_CONCURRENCY,
   })
   const [saving, setSaving] = useState(false)
   const [newLabel, setNewLabel] = useState('')
@@ -267,6 +269,28 @@ export default function SettingsScreen() {
                 Duplicate and Distinct.
               </p>
             </div>
+          </div>
+
+          <div className="w-1/2 pr-2">
+            <label className="block text-xs text-gray-400 mb-1">Requests in parallel</label>
+            <input
+              type="number"
+              min="1"
+              max="16"
+              className="input"
+              value={form.classifyConcurrency}
+              onChange={(e) =>
+                setForm((p) => ({
+                  ...p,
+                  classifyConcurrency: clampInt(e.target.value, 1, 16, p.classifyConcurrency),
+                }))
+              }
+            />
+            <p className="text-xs text-gray-600 mt-1">
+              Runtime is almost entirely output-token generation, so this divides the wall clock
+              until your account&apos;s tokens-per-minute limit binds. Lower it if runs start
+              failing with rate-limit errors.
+            </p>
           </div>
 
           <label className="flex items-center gap-3 cursor-pointer">

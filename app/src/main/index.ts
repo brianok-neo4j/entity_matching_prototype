@@ -15,6 +15,7 @@ import * as neo4jStorage from './neo4j-storage'
 import { toJsNumber } from './neo4j-int'
 import * as usage from './usage-service'
 import * as classify from './classify-service'
+import { mapWithConcurrency, sleep } from './concurrency'
 // Type-only: the runtime import stays lazy so the SDK isn't loaded at startup.
 import type AnthropicClient from '@anthropic-ai/sdk'
 import { listPricing, cacheFloorFor, modelsCachingAtOrBelow, normalizeModelId } from './pricing'
@@ -88,6 +89,12 @@ function classifyVariant(batchSize: number, cached: boolean): string {
 }
 
 const CHARS_PER_TOKEN_FALLBACK = 3.6
+
+// Total attempts per batch, and the waits between them. The SDK already retries
+// transient failures inside a single call, so these back off further rather
+// than hammering.
+const BATCH_ATTEMPTS = 3
+const BATCH_RETRY_DELAYS_MS = [2000, 6000]
 
 // Builds the run's cached prefix and everything derived from it. Returns the
 // prefix text alongside the renderer-facing plan so the classify handler and
@@ -192,6 +199,7 @@ async function buildClassifyPlan(
     model,
     unitCount: pending.length,
     variant: classifyVariant(batchSize, useCache),
+    concurrency: Math.max(1, settings.classifyConcurrency),
     promptCharsPerUnit: meanPairBlockChars(pending),
     // Two short lines per pair plus JSON scaffolding.
     outputTokensPerUnitHint: 55,
@@ -496,6 +504,7 @@ function registerIpc() {
     const client = new Anthropic({ apiKey: settings.anthropicApiKey })
     const model = settings.assistantModel
     const batchSize = Math.max(1, settings.classifyBatchSize)
+    const concurrency = Math.max(1, settings.classifyConcurrency)
 
     const plan = await buildClassifyPlan(client, sessionId, allPairs, settings)
     // Snapshot the prefix for the whole run. Rebuilding it as verdicts land
@@ -515,6 +524,7 @@ function registerIpc() {
         prefixTokens: plan.prefixTokens,
         fewShotUsed: plan.fewShotAvailable,
         cacheEnabled: useCache ? 1 : 0,
+        concurrency,
       },
     })
 
@@ -527,10 +537,10 @@ function registerIpc() {
     const decided = new Map<string, { verdict: Verdict; note: string }>()
 
     // Resolves one group of pairs, returning the pairs it could not classify.
-    async function runBatch(batch: CandidatePair[]): Promise<CandidatePair[]> {
+    async function runBatch(batch: CandidatePair[], attempt = 1): Promise<CandidatePair[]> {
       const { text, tagToPairId } = classify.buildBatchMessage(batch)
       const startedAt = Date.now()
-      const featureBase = { batchPairs: batch.length, promptChars: text.length }
+      const featureBase = { batchPairs: batch.length, promptChars: text.length, attempt }
 
       try {
         const msg = await client.messages.create({
@@ -586,16 +596,26 @@ function registerIpc() {
           error: (err as Error).message,
           features: featureBase,
         })
+
+        // The SDK already retried transient errors within this call, so retry
+        // the batch on a delay rather than immediately — over a multi-hour run
+        // the losses are network blips, and without this each one silently
+        // drops a whole batch of pairs.
+        if (attempt < BATCH_ATTEMPTS && !autoClassifyCancelled) {
+          await sleep(BATCH_RETRY_DELAYS_MS[attempt - 1] ?? 5000)
+          if (autoClassifyCancelled) return batch
+          return runBatch(batch, attempt + 1)
+        }
         return batch
       }
     }
 
-    for (let i = 0; i < pending.length; i += batchSize) {
-      // Cancellation is checked per call, so a batch costs up to batchSize - 1
-      // pairs of extra work.
-      if (autoClassifyCancelled) break
-
-      const batch = pending.slice(i, i + batchSize)
+    // Processes one batch end to end: the call, the per-pair retry for
+    // stragglers, and the progress events for every pair in it.
+    async function processBatch(batch: CandidatePair[]): Promise<void> {
+      // Cancellation is checked per batch, so cancelling costs up to
+      // batchSize - 1 pairs of in-flight work per worker.
+      if (autoClassifyCancelled) return
       attempted += batch.length
 
       let unresolved = await runBatch(batch)
@@ -623,6 +643,22 @@ function registerIpc() {
           usage: totals,
         })
       }
+    }
+
+    const batches: CandidatePair[][] = []
+    for (let i = 0; i < pending.length; i += batchSize) {
+      batches.push(pending.slice(i, i + batchSize))
+    }
+
+    // Run the first batch alone before fanning out. A cache entry only becomes
+    // readable once the writing response has started coming back, so N parallel
+    // calls at a cold start would each pay the write premium instead of one
+    // writing and the rest reading.
+    if (useCache && batches.length > 1) {
+      await processBatch(batches[0])
+      await mapWithConcurrency(batches.slice(1), concurrency, processBatch)
+    } else {
+      await mapWithConcurrency(batches, concurrency, processBatch)
     }
 
     usage.finishJob(jobId, autoClassifyCancelled ? 'cancelled' : 'complete', attempted)

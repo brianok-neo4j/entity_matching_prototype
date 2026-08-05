@@ -191,6 +191,7 @@ export interface AppSettings {
   classifyBatchSize: number
   classifyFewShotCount: number
   classifyCachedPrefix: boolean
+  classifyConcurrency: number
 }
 
 // ─── LLM usage, cost, and telemetry ──────────────────────────────────────────
