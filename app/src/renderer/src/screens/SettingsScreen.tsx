@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
-import { DEFAULT_ASSISTANT_MODEL } from '../../../shared/constants'
+import {
+  DEFAULT_ASSISTANT_MODEL,
+  DEFAULT_CLASSIFY_BATCH_SIZE,
+  DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
+  DEFAULT_CLASSIFY_CACHED_PREFIX,
+} from '../../../shared/constants'
 import type { AppSettings, ModelPricing } from '../../../shared/types'
 
 // Keeps a partially-typed number input from writing NaN into settings.
@@ -20,9 +25,9 @@ export default function SettingsScreen() {
     theme: 'dark',
     useNeo4jStorage: false,
     pricingOverrides: {},
-    classifyBatchSize: 20,
-    classifyFewShotCount: 12,
-    classifyCachedPrefix: true,
+    classifyBatchSize: DEFAULT_CLASSIFY_BATCH_SIZE,
+    classifyFewShotCount: DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
+    classifyCachedPrefix: DEFAULT_CLASSIFY_CACHED_PREFIX,
   })
   const [saving, setSaving] = useState(false)
   const [newLabel, setNewLabel] = useState('')

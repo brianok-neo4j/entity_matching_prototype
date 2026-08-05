@@ -1,5 +1,10 @@
 import { getDb } from './db'
-import { DEFAULT_ASSISTANT_MODEL } from '../shared/constants'
+import {
+  DEFAULT_ASSISTANT_MODEL,
+  DEFAULT_CLASSIFY_BATCH_SIZE,
+  DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
+  DEFAULT_CLASSIFY_CACHED_PREFIX,
+} from '../shared/constants'
 import type { AppSettings } from '../shared/types'
 
 const DEFAULTS: AppSettings = {
@@ -10,9 +15,9 @@ const DEFAULTS: AppSettings = {
   theme: 'system',
   useNeo4jStorage: false,
   pricingOverrides: {},
-  classifyBatchSize: 20,
-  classifyFewShotCount: 12,
-  classifyCachedPrefix: true,
+  classifyBatchSize: DEFAULT_CLASSIFY_BATCH_SIZE,
+  classifyFewShotCount: DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
+  classifyCachedPrefix: DEFAULT_CLASSIFY_CACHED_PREFIX,
 }
 
 export function getSettings(): AppSettings {
