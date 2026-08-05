@@ -15,9 +15,32 @@ The tool guides you through a four-step workflow:
 1. **Connect** — Save a Bolt connection profile (credentials stored in the OS keychain via keytar, never in plaintext). Test connectivity and discover the graph schema automatically.
 2. **Configure** — Select an entity label, choose which properties to compare, assign similarity metrics with per-metric thresholds, and set a surfacing rule that controls which pairs enter the review queue. If an Anthropic API key is set, the **✦ Ask AI to suggest** button will recommend fields, metrics, and thresholds based on the property names and sample values, with a per-field explanation of the reasoning.
 3. **Compute** — Run pairwise similarity scoring across all nodes. Progress is streamed per metric. After completion, interactive score-distribution histograms let you adjust thresholds before proceeding.
-4. **Review** — Work through the pair queue, mark each as **Duplicate** or **Distinct**, add notes, inspect relationships and source passages, and apply merges when ready. The **✦ AI Classify…** button previews the run — how many requests, the shared-prompt size, and the estimated cost — then, once you confirm, sends pending pairs to Claude in batches for automated Duplicate/Distinct recommendations with reasoning stored in the Notes field (cancelable mid-run, with running spend shown as it goes). Pairs you have already reviewed are included in the prompt as worked examples, so accuracy improves as you review. After applying merges, choose to return to the Session list or stay in review. Use **Re-run Compute →** to run a second scoring pass on the same session (e.g. to surface transitive duplicates after merging) — existing verdicts are preserved.
+4. **Review** — Work through the pair queue, mark each as **Duplicate** or **Distinct**, add notes, inspect relationships and source passages, and apply merges when ready. The **✦ AI Classify…** button previews the run — how many requests, the shared-prompt size, and the estimated cost — then, once you confirm, sends pending pairs to Claude in batches for automated Duplicate/Distinct recommendations with reasoning stored in the Notes field (cancelable mid-run, with running spend shown as it goes). Pairs you have already reviewed are included in the prompt as worked examples, so accuracy improves as you review. After applying merges, choose to return to the Session list or stay in review. Use **Re-run Compute →** to run a second scoring pass on the same session (e.g. to surface transitive duplicates after merging) — existing verdicts are preserved, and the pass only ever adds to the queue (see [Re-running compute](#re-running-compute)).
 
-Sessions are persisted in SQLite. Verdicts are preserved across recomputes — only scores and node snapshots are refreshed.
+Sessions are persisted in SQLite.
+
+---
+
+## Re-running compute
+
+**A re-run only ever adds to a session. It never removes pairs, and it never removes scores.**
+
+A pass computes the pairs that the current configuration surfaces, then upserts them:
+
+- Pairs it surfaces are inserted, or have their node snapshots refreshed if already present.
+- Scores are written per `(pair, metric, field)`, replacing that exact combination.
+- **Verdicts, decision timestamps, and notes are never overwritten** — human and AI review survives any number of re-runs.
+
+What it does *not* do follows from the same design:
+
+- **A pair that no longer meets the surfacing rule stays in the queue.** Raising a threshold, removing a metric, or unchecking a field does not retire the pairs those settings originally surfaced.
+- **Scores for a field you removed stay attached to their pairs.** The re-run simply never mentions that field, so nothing replaces those rows — and the review panel goes on showing a match on a field the session no longer compares.
+
+This is deliberate: pruning the queue would mean deleting pairs a human or the AI had already ruled on. The trade is that a session accumulates the union of every configuration it has ever run under.
+
+The practical consequence is worth stating plainly. If you configure a session with a broad field like `country · exact-match = 1.0`, compute, and then remove that field and re-run, the queue still holds every pair that country match produced — and the review panel still shows them matching on country.
+
+**To get a queue that reflects only the current configuration, create a new session.** Re-run compute is for widening a search or re-scoring after a merge, not for narrowing one.
 
 ---
 
