@@ -5,10 +5,39 @@ import type { SchemaModel, LabelMeta, PropertyMeta, PropertyKind, RelTypeMeta } 
 
 let _cached: SchemaModel | null = null
 
+// Nodes read per label to derive both the property list and sample values. One
+// bounded scan per label replaces a DISTINCT query per property — see the
+// sampling step below.
+const SAMPLE_NODE_LIMIT = 100
+const MAX_SAMPLE_VALUES = 10
+
+// Each concurrent query needs its own session; a single session serialises its
+// queries. Well inside the driver's default connection pool.
+const LABEL_SAMPLE_CONCURRENCY = 8
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
 export async function discoverSchema(): Promise<SchemaModel> {
   const driver = getDriver()
   const { excludedLabels } = getSettings()
 
+  const startedAt = Date.now()
+  let queryCount = 0
   const session = driver.session()
   try {
     // Node type properties
@@ -18,6 +47,7 @@ export async function discoverSchema(): Promise<SchemaModel> {
       RETURN nodeLabels, propertyName, propertyTypes, mandatory
       ORDER BY nodeLabels, propertyName
     `)
+    queryCount++
 
     // Relationship types
     const relResult = await session.run(`
@@ -26,11 +56,13 @@ export async function discoverSchema(): Promise<SchemaModel> {
       RETURN relType, propertyName, propertyTypes
       ORDER BY relType
     `)
+    queryCount++
 
     // Node counts
     let countsMap: Record<string, number> = {}
     try {
       const statsResult = await session.run('CALL apoc.meta.stats() YIELD labels RETURN labels')
+      queryCount++
       const raw = statsResult.records[0].get('labels') as Record<string, unknown>
       for (const [k, v] of Object.entries(raw)) countsMap[k] = toJsNumber(v)
     } catch {
@@ -47,6 +79,7 @@ export async function discoverSchema(): Promise<SchemaModel> {
     let apocAvailable = false
     try {
       await session.run('RETURN apoc.version() AS v')
+      queryCount++
       apocAvailable = true
     } catch { /* not available */ }
 
@@ -83,45 +116,87 @@ export async function discoverSchema(): Promise<SchemaModel> {
       }
     }
 
-    // Fetch sample values and infer kind.
-    // If the schema procedure returned no properties for a label (common on Aura when
-    // there are no schema constraints), fall back to sampling actual nodes.
-    const labels: LabelMeta[] = []
-    for (const [label, { properties }] of labelMap) {
-      if (properties.size === 0) {
+    // Sample each label once and derive everything from those rows.
+    //
+    // This previously ran one query per (label, property):
+    //   MATCH (n:`L`) WHERE n.`p` IS NOT NULL RETURN DISTINCT n.`p` LIMIT 10
+    // which cost a round trip each — hundreds on a wide schema, all sequential —
+    // and could not stop early: DISTINCT ... LIMIT 10 must keep scanning until
+    // it finds ten *distinct* values, so any low-cardinality property (type,
+    // status, category) scanned the entire label.
+    //
+    // One bounded scan per label answers both questions at once, and subsumes
+    // the old "schema procedure returned no properties" fallback, since
+    // properties(n) reports whatever the nodes actually carry.
+    const tSample = Date.now()
+    const labelNames = [...labelMap.keys()]
+    const sampledRows = await mapWithConcurrency(
+      labelNames,
+      LABEL_SAMPLE_CONCURRENCY,
+      async (label): Promise<Record<string, unknown>[]> => {
+        const s = driver.session()
         try {
-          const sampleResult = await session.run(
-            `MATCH (n:\`${label}\`) RETURN properties(n) AS props LIMIT 3`
+          const result = await s.run(
+            `MATCH (n:\`${label}\`) RETURN properties(n) AS props LIMIT ${SAMPLE_NODE_LIMIT}`
           )
-          for (const r of sampleResult.records) {
-            const props = r.get('props') as Record<string, unknown> | null
-            if (!props) continue
-            for (const key of Object.keys(props)) {
-              if (!properties.has(key)) {
-                properties.set(key, {
-                  name: key,
-                  types: [],
-                  mandatory: false,
-                  inferredKind: 'other',
-                  sampleValues: [],
-                })
-              }
-            }
+          queryCount++
+          return result.records
+            .map((r) => r.get('props') as Record<string, unknown> | null)
+            .filter((p): p is Record<string, unknown> => p !== null)
+        } catch {
+          // A single unreadable label shouldn't sink the whole discovery.
+          return []
+        } finally {
+          await s.close()
+        }
+      }
+    )
+    console.log(
+      `[schema] sampled ${labelNames.length} labels in ${Date.now() - tSample}ms ` +
+        `(${LABEL_SAMPLE_CONCURRENCY}-way concurrent)`
+    )
+
+    const labels: LabelMeta[] = []
+    labelNames.forEach((label, i) => {
+      const { properties } = labelMap.get(label)!
+      const rows = sampledRows[i]
+
+      // Pick up properties the schema procedure didn't report — common on Aura
+      // when the database has no constraints.
+      for (const props of rows) {
+        for (const key of Object.keys(props)) {
+          if (!properties.has(key)) {
+            properties.set(key, {
+              name: key,
+              types: [],
+              mandatory: false,
+              inferredKind: 'other',
+              sampleValues: [],
+            })
           }
-        } catch { /* ignore */ }
+        }
       }
 
       const propMetas: PropertyMeta[] = []
       for (const [propName, meta] of properties) {
-        const sampleResult = await session.run(
-          `MATCH (n:\`${label}\`) WHERE n.\`${propName}\` IS NOT NULL RETURN DISTINCT n.\`${propName}\` AS val LIMIT 10`
-        )
-        meta.sampleValues = sampleResult.records.map((r) => sanitize(r.get('val')))
+        const seen = new Set<string>()
+        const values: unknown[] = []
+        for (const props of rows) {
+          const raw = props[propName]
+          if (raw === null || raw === undefined) continue
+          const value = sanitize(raw)
+          const key = JSON.stringify(value)
+          if (seen.has(key)) continue
+          seen.add(key)
+          values.push(value)
+          if (values.length >= MAX_SAMPLE_VALUES) break
+        }
+        meta.sampleValues = values
         meta.inferredKind = inferKind(meta)
         propMetas.push(meta)
       }
       labels.push({ name: label, count: countsMap[label] ?? 0, properties: propMetas })
-    }
+    })
 
     // Sort by count desc
     labels.sort((a, b) => Number(b.count) - Number(a.count))
@@ -135,6 +210,11 @@ export async function discoverSchema(): Promise<SchemaModel> {
       }
     }
     const relationshipTypes = Array.from(relMap.values())
+
+    console.log(
+      `[schema] discovered ${labels.length} labels, ${relationshipTypes.length} rel types ` +
+        `in ${Date.now() - startedAt}ms across ${queryCount} queries`
+    )
 
     _cached = { labels, relationshipTypes, discoveredAt: new Date().toISOString(), apocAvailable }
     return _cached
