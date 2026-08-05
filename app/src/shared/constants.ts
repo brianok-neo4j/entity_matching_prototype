@@ -19,3 +19,9 @@ export const DEFAULT_CLASSIFY_BATCH_SIZE = 20
 export const DEFAULT_CLASSIFY_FEW_SHOT_COUNT = 20
 
 export const DEFAULT_CLASSIFY_CACHED_PREFIX = true
+
+// Batches sent in parallel. Calls are almost entirely output-token generation
+// (~160 tok/s measured), so wall-clock scales close to 1/concurrency until the
+// account's output-tokens-per-minute limit binds. Four is deliberately modest;
+// raise it if the run isn't hitting 429s.
+export const DEFAULT_CLASSIFY_CONCURRENCY = 4

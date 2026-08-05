@@ -1,4 +1,5 @@
 import { getDriver } from './connection-service'
+import { mapWithConcurrency } from './concurrency'
 import { getSettings } from './settings-service'
 import { toJsNumber, sanitize } from './neo4j-int'
 import type { SchemaModel, LabelMeta, PropertyMeta, PropertyKind, RelTypeMeta } from '../shared/types'
@@ -14,23 +15,6 @@ const MAX_SAMPLE_VALUES = 10
 // Each concurrent query needs its own session; a single session serialises its
 // queries. Well inside the driver's default connection pool.
 const LABEL_SAMPLE_CONCURRENCY = 8
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results: R[] = new Array(items.length)
-  let next = 0
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (next < items.length) {
-      const i = next++
-      results[i] = await fn(items[i])
-    }
-  })
-  await Promise.all(workers)
-  return results
-}
 
 export async function discoverSchema(): Promise<SchemaModel> {
   const driver = getDriver()

@@ -4,6 +4,7 @@ import {
   DEFAULT_CLASSIFY_BATCH_SIZE,
   DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
   DEFAULT_CLASSIFY_CACHED_PREFIX,
+  DEFAULT_CLASSIFY_CONCURRENCY,
 } from '../shared/constants'
 import type { AppSettings } from '../shared/types'
 
@@ -18,6 +19,7 @@ const DEFAULTS: AppSettings = {
   classifyBatchSize: DEFAULT_CLASSIFY_BATCH_SIZE,
   classifyFewShotCount: DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
   classifyCachedPrefix: DEFAULT_CLASSIFY_CACHED_PREFIX,
+  classifyConcurrency: DEFAULT_CLASSIFY_CONCURRENCY,
 }
 
 export function getSettings(): AppSettings {
