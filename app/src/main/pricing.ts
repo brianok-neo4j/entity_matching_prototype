@@ -70,6 +70,18 @@ export function cacheFloorFor(model: string): number {
   return CACHE_FLOORS[normalizeModelId(model)] ?? DEFAULT_CACHE_FLOOR
 }
 
+// Models whose cache floor a prefix of this size already clears, cheapest
+// input rate first — used to name a concrete alternative when the current
+// model's floor is out of reach.
+export function modelsCachingAtOrBelow(
+  prefixTokens: number,
+  overrides: PricingOverrides = {}
+): ModelPricing[] {
+  return listPricing(overrides)
+    .filter((p) => cacheFloorFor(p.modelId) <= prefixTokens)
+    .sort((a, b) => a.inputPerMTok - b.inputPerMTok)
+}
+
 export function normalizeModelId(model: string): string {
   return model
     .trim()

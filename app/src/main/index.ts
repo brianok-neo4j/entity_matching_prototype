@@ -17,7 +17,7 @@ import * as usage from './usage-service'
 import * as classify from './classify-service'
 // Type-only: the runtime import stays lazy so the SDK isn't loaded at startup.
 import type AnthropicClient from '@anthropic-ai/sdk'
-import { listPricing, cacheFloorFor } from './pricing'
+import { listPricing, cacheFloorFor, modelsCachingAtOrBelow, normalizeModelId } from './pricing'
 import { getCachedSchema } from './schema-service'
 import type {
   Session,
@@ -140,6 +140,53 @@ async function buildClassifyPlan(
   const cacheEligible = prefixTokens >= cacheFloor
   const useCache = cacheRequested && cacheEligible
 
+  // When the prefix misses the floor, work out what would actually fix it
+  // rather than telling the user to "raise the count" and leaving them to guess
+  // by how much, or whether they even have enough reviewed pairs to get there.
+  const decidedPairCount = allPairs.filter((p) => p.verdict !== 'pending').length
+  let suggestedFewShotCount: number | null = null
+  let alternativeModel: ClassifyPlan['alternativeModel'] = null
+
+  if (!cacheEligible) {
+    const alt = modelsCachingAtOrBelow(prefixTokens, settings.pricingOverrides).find(
+      (p) => p.modelId !== normalizeModelId(model)
+    )
+    alternativeModel = alt
+      ? { id: alt.modelId, displayName: alt.displayName, cacheFloor: cacheFloorFor(alt.modelId) }
+      : null
+
+    if (fewShotUsed > 0 && decidedPairCount > fewShotUsed) {
+      // Price one example by measuring the prefix without any, so the shortfall
+      // converts to a concrete number of examples.
+      const bare = classify.buildPrefix({
+        session,
+        labelMeta: getCachedSchema()?.labels.find((l) => l.name === session.label) ?? null,
+        allPairs,
+        fewShotCount: 0,
+      })
+      let baseTokens: number
+      try {
+        const counted = await client.messages.countTokens({
+          model,
+          system: [{ type: 'text', text: bare.text }],
+          messages: [{ role: 'user', content: 'x' }],
+        })
+        baseTokens = counted.input_tokens
+      } catch {
+        baseTokens = Math.round(bare.text.length / CHARS_PER_TOKEN_FALLBACK)
+      }
+      const perExample = (prefixTokens - baseTokens) / fewShotUsed
+      if (perExample > 0) {
+        // Examples vary in size and the selection changes as the count changes,
+        // so a straight extrapolation lands just under the floor as often as
+        // over it. Aim past the floor rather than at it.
+        const target = cacheFloor * 1.15
+        const needed = Math.ceil((target - baseTokens) / perExample)
+        if (needed <= decidedPairCount) suggestedFewShotCount = needed
+      }
+    }
+  }
+
   const estimate = usage.estimateJob({
     kind: 'auto-classify',
     model,
@@ -169,6 +216,9 @@ async function buildClassifyPlan(
       cacheFloor,
       cacheRequested,
       cacheEligible,
+      decidedPairCount,
+      suggestedFewShotCount,
+      alternativeModel,
     },
   }
 }
