@@ -142,7 +142,7 @@ function MergeModal({ sessionId, onClose, onApplied, onGoToSessions, addToast }:
                       <span className="text-xs text-gray-500 ml-2">
                         {s === 'discard' && '— keep survivor properties only'}
                         {s === 'overwrite' && '— absorbed node properties overwrite survivor'}
-                        {s === 'combine' && '— merge lists (requires APOC)'}
+                        {s === 'combine' && '— merge lists (available on Aura; requires APOC on self-managed)'}
                       </span>
                     </div>
                   </label>
@@ -259,12 +259,39 @@ function EstimatePanel({ plan, loading }: { plan: ClassifyPlan | null; loading: 
           </p>
         )}
         {cacheBlocked && (
-          <p className="text-amber-500">
-            Prefix is {formatTokens(plan.prefixTokens)} tokens, below the{' '}
-            {formatTokens(plan.cacheFloor)}-token cache minimum for {estimate.model} — it will be
-            re-sent in full on every call. Raise the worked-example count, or switch to a model with
-            a lower floor.
-          </p>
+          <div className="text-amber-500 space-y-1">
+            <p>
+              Prefix is {formatTokens(plan.prefixTokens)} tokens, below the{' '}
+              {formatTokens(plan.cacheFloor)}-token cache minimum for {estimate.model} — it will be
+              re-sent in full on every call.
+            </p>
+            <p className="text-amber-600">
+              To fix, in <span className="text-amber-400">Settings → AI Auto-classify</span>:
+            </p>
+            <ul className="text-amber-600 list-disc list-inside space-y-0.5">
+              {plan.suggestedFewShotCount !== null ? (
+                <li>
+                  raise <span className="text-amber-400">Worked examples</span> from{' '}
+                  {plan.fewShotAvailable} to about {plan.suggestedFewShotCount} — you have{' '}
+                  {plan.decidedPairCount} reviewed pair
+                  {plan.decidedPairCount === 1 ? '' : 's'} to draw from
+                </li>
+              ) : (
+                <li>
+                  review more pairs by hand — {plan.decidedPairCount} decided so far, not enough to
+                  reach the minimum on their own
+                </li>
+              )}
+              {plan.alternativeModel && (
+                <li>
+                  or set <span className="text-amber-400">Model</span> to{' '}
+                  {plan.alternativeModel.displayName}, whose{' '}
+                  {formatTokens(plan.alternativeModel.cacheFloor)}-token minimum this prefix already
+                  clears
+                </li>
+              )}
+            </ul>
+          </div>
         )}
         {cacheOff && <p className="text-gray-600">Prefix caching is disabled in Settings.</p>}
         {!estimate.priced && (

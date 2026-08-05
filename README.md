@@ -70,10 +70,10 @@ The merge step uses **union-find** to group transitively connected duplicates in
 
 For each group, the survivor node is chosen by highest degree (most relationships). Two merge paths are available:
 
-- **APOC path** — a single `apoc.refactor.mergeNodes` call per group (recommended; requires APOC installed)
+- **APOC path** — a single `apoc.refactor.mergeNodes` call per group (recommended; available on Aura, requires APOC on self-managed)
 - **Fallback path** — a manual Cypher transaction that collects all relationships, re-creates them on the survivor, then `DETACH DELETE`s absorbed nodes (no APOC dependency)
 
-Property conflict strategy is selectable per merge pass: **discard** (keep survivor), **overwrite** (absorbed overwrites), or **combine** (merge arrays, APOC only).
+Property conflict strategy is selectable per merge pass: **discard** (keep survivor), **overwrite** (absorbed overwrites), or **combine** (merge arrays; needs the APOC path).
 
 Every merge pass writes an audit record to SQLite (and optionally to the graph as `ERAuditRecord` nodes).
 
@@ -115,7 +115,7 @@ Costs are computed from a per-model rate table bundled with the app. Anthropic p
 
 - Node.js 18+
 - A running Neo4j instance (5.x recommended)
-- APOC plugin (optional, enables the faster merge path and combine property strategy)
+- APOC Core — bundled with Aura, optional on self-managed. Enables the faster merge path and the combine property strategy; the tool falls back to plain Cypher without it.
 
 ### Install
 
@@ -152,8 +152,8 @@ Open **Settings** from the top nav bar.
 |---|---|
 | Anthropic API Key | Powers three features: the assistant panel (chatbot), **AI Auto-classify** (bulk pair verdicts), and **AI field/metric suggestion** on the Configure screen. |
 | OpenAI API Key | Required only when using the OpenAI semantic-cosine backend. |
-| Assistant Model | Defaults to `claude-haiku-4-5-20251001`. Can be upgraded to Sonnet or Opus. |
-| AI Auto-classify | Pairs per request (default 20), number of worked examples drawn from your own verdicts (default 12), and whether the shared prompt prefix is cached. |
+| Assistant Model | Powers the assistant, auto-classify, and field suggestions. Defaults to `claude-sonnet-5`. The list is generated from the pricing table, so every selectable model shows its current per-million-token rates. |
+| AI Auto-classify | Pairs per request (default 20), number of worked examples drawn from your own verdicts (default 20), and whether the shared prompt prefix is cached. |
 | Token Pricing | Per-million-token input and output rates used to cost every Claude call. Ships with current rates; edit one if it changes, or reset to the bundled values. |
 | Hidden Labels | Labels excluded from schema discovery. Defaults to GraphRAG infrastructure labels. |
 | Neo4j Storage | Write pair verdicts and merge audit records back into the graph as first-class nodes. |

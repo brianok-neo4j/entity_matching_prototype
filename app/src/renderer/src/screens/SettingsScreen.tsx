@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useStore } from '../store'
+import {
+  DEFAULT_ASSISTANT_MODEL,
+  DEFAULT_CLASSIFY_BATCH_SIZE,
+  DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
+  DEFAULT_CLASSIFY_CACHED_PREFIX,
+} from '../../../shared/constants'
 import type { AppSettings, ModelPricing } from '../../../shared/types'
-
-const MODELS = [
-  'claude-haiku-4-5-20251001',
-  'claude-sonnet-4-6',
-  'claude-opus-4-7',
-]
 
 // Keeps a partially-typed number input from writing NaN into settings.
 function clampInt(raw: string, min: number, max: number, fallback: number): number {
@@ -20,14 +20,14 @@ export default function SettingsScreen() {
   const [form, setForm] = useState<AppSettings>({
     anthropicApiKey: '',
     openaiApiKey: '',
-    assistantModel: 'claude-haiku-4-5-20251001',
+    assistantModel: DEFAULT_ASSISTANT_MODEL,
     excludedLabels: ['__Entity__', '__KGBuilder__', 'Document', 'Chunk', '_Bloom_Perspective_', '_Bloom_Scene_'],
     theme: 'dark',
     useNeo4jStorage: false,
     pricingOverrides: {},
-    classifyBatchSize: 20,
-    classifyFewShotCount: 12,
-    classifyCachedPrefix: true,
+    classifyBatchSize: DEFAULT_CLASSIFY_BATCH_SIZE,
+    classifyFewShotCount: DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
+    classifyCachedPrefix: DEFAULT_CLASSIFY_CACHED_PREFIX,
   })
   const [saving, setSaving] = useState(false)
   const [newLabel, setNewLabel] = useState('')
@@ -40,6 +40,22 @@ export default function SettingsScreen() {
     })
     window.api.usage.pricing().then(setPricing)
   }, [])
+
+  // Derived from the pricing catalog rather than a separate hard-coded list, so
+  // the two can't drift and every selectable model is guaranteed to be priced.
+  const modelOptions = (() => {
+    const options = pricing.map((p) => ({
+      id: p.modelId,
+      label: `${p.displayName} — $${p.inputPerMTok.toFixed(2)} in / $${p.outputPerMTok.toFixed(2)} out`,
+    }))
+    // A saved model may be a dated snapshot (claude-haiku-4-5-20251001) that the
+    // catalog stores un-dated. Keep it as an option so rendering the select
+    // doesn't silently switch the user onto a different model.
+    if (form.assistantModel && !options.some((o) => o.id === form.assistantModel)) {
+      options.unshift({ id: form.assistantModel, label: `${form.assistantModel} (current)` })
+    }
+    return options
+  })()
 
   // Cache rates are derived from the input rate, so an override only carries the
   // two rates the user can meaningfully set.
@@ -163,8 +179,17 @@ export default function SettingsScreen() {
           <div>
             <label className="block text-xs text-gray-400 mb-1">Model</label>
             <select className="input" value={form.assistantModel} onChange={f('assistantModel')}>
-              {MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+              {modelOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
             </select>
+            <p className="text-xs text-gray-600 mt-1">
+              Drives the assistant, auto-classify, and field suggestions. Rates are per million
+              tokens; cheaper models also have a higher prompt-cache minimum, which the classify
+              dialog reports.
+            </p>
           </div>
         </section>
 

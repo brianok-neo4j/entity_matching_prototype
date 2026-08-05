@@ -1,17 +1,23 @@
 import { getDb } from './db'
+import {
+  DEFAULT_ASSISTANT_MODEL,
+  DEFAULT_CLASSIFY_BATCH_SIZE,
+  DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
+  DEFAULT_CLASSIFY_CACHED_PREFIX,
+} from '../shared/constants'
 import type { AppSettings } from '../shared/types'
 
 const DEFAULTS: AppSettings = {
   anthropicApiKey: '',
   openaiApiKey: '',
-  assistantModel: 'claude-haiku-4-5-20251001',
+  assistantModel: DEFAULT_ASSISTANT_MODEL,
   excludedLabels: ['__Entity__', '__KGBuilder__', 'Document', 'Chunk', '_Bloom_Perspective_', '_Bloom_Scene_'],
   theme: 'system',
   useNeo4jStorage: false,
   pricingOverrides: {},
-  classifyBatchSize: 20,
-  classifyFewShotCount: 12,
-  classifyCachedPrefix: true,
+  classifyBatchSize: DEFAULT_CLASSIFY_BATCH_SIZE,
+  classifyFewShotCount: DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
+  classifyCachedPrefix: DEFAULT_CLASSIFY_CACHED_PREFIX,
 }
 
 export function getSettings(): AppSettings {
@@ -25,7 +31,12 @@ export function getSettings(): AppSettings {
       // ignore malformed rows
     }
   }
-  return { ...DEFAULTS, ...stored }
+  const merged = { ...DEFAULTS, ...stored }
+  // A stored empty string would survive the spread and reach the API as a blank
+  // model. Enforcing the invariant here means callers can use
+  // settings.assistantModel directly instead of each repeating a fallback.
+  if (!merged.assistantModel) merged.assistantModel = DEFAULT_ASSISTANT_MODEL
+  return merged
 }
 
 export function setSettings(partial: Partial<AppSettings>): void {

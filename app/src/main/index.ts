@@ -17,7 +17,7 @@ import * as usage from './usage-service'
 import * as classify from './classify-service'
 // Type-only: the runtime import stays lazy so the SDK isn't loaded at startup.
 import type AnthropicClient from '@anthropic-ai/sdk'
-import { listPricing, cacheFloorFor } from './pricing'
+import { listPricing, cacheFloorFor, modelsCachingAtOrBelow, normalizeModelId } from './pricing'
 import { getCachedSchema } from './schema-service'
 import type {
   Session,
@@ -108,7 +108,7 @@ async function buildClassifyPlan(
   const session = sessions.loadSession(sessionId)
   if (!session) throw new Error('Session not found')
 
-  const model = settings.assistantModel || 'claude-haiku-4-5-20251001'
+  const model = settings.assistantModel
   const batchSize = Math.max(1, settings.classifyBatchSize)
   const pending = allPairs.filter((p) => p.verdict === 'pending')
 
@@ -140,6 +140,53 @@ async function buildClassifyPlan(
   const cacheEligible = prefixTokens >= cacheFloor
   const useCache = cacheRequested && cacheEligible
 
+  // When the prefix misses the floor, work out what would actually fix it
+  // rather than telling the user to "raise the count" and leaving them to guess
+  // by how much, or whether they even have enough reviewed pairs to get there.
+  const decidedPairCount = allPairs.filter((p) => p.verdict !== 'pending').length
+  let suggestedFewShotCount: number | null = null
+  let alternativeModel: ClassifyPlan['alternativeModel'] = null
+
+  if (!cacheEligible) {
+    const alt = modelsCachingAtOrBelow(prefixTokens, settings.pricingOverrides).find(
+      (p) => p.modelId !== normalizeModelId(model)
+    )
+    alternativeModel = alt
+      ? { id: alt.modelId, displayName: alt.displayName, cacheFloor: cacheFloorFor(alt.modelId) }
+      : null
+
+    if (fewShotUsed > 0 && decidedPairCount > fewShotUsed) {
+      // Price one example by measuring the prefix without any, so the shortfall
+      // converts to a concrete number of examples.
+      const bare = classify.buildPrefix({
+        session,
+        labelMeta: getCachedSchema()?.labels.find((l) => l.name === session.label) ?? null,
+        allPairs,
+        fewShotCount: 0,
+      })
+      let baseTokens: number
+      try {
+        const counted = await client.messages.countTokens({
+          model,
+          system: [{ type: 'text', text: bare.text }],
+          messages: [{ role: 'user', content: 'x' }],
+        })
+        baseTokens = counted.input_tokens
+      } catch {
+        baseTokens = Math.round(bare.text.length / CHARS_PER_TOKEN_FALLBACK)
+      }
+      const perExample = (prefixTokens - baseTokens) / fewShotUsed
+      if (perExample > 0) {
+        // Examples vary in size and the selection changes as the count changes,
+        // so a straight extrapolation lands just under the floor as often as
+        // over it. Aim past the floor rather than at it.
+        const target = cacheFloor * 1.15
+        const needed = Math.ceil((target - baseTokens) / perExample)
+        if (needed <= decidedPairCount) suggestedFewShotCount = needed
+      }
+    }
+  }
+
   const estimate = usage.estimateJob({
     kind: 'auto-classify',
     model,
@@ -169,8 +216,51 @@ async function buildClassifyPlan(
       cacheFloor,
       cacheRequested,
       cacheEligible,
+      decidedPairCount,
+      suggestedFewShotCount,
+      alternativeModel,
     },
   }
+}
+
+// Schema-enforced shape for the field/metric suggestion, mirroring
+// AISuggestion. Structured output removes the need to coax JSON out of prose
+// and then strip markdown fences off it.
+const SUGGEST_OUTPUT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    explanation: { type: 'string', description: '2-3 sentence summary of the strategy' },
+    fields: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          propertyName: { type: 'string' },
+          enabled: { type: 'boolean' },
+          metrics: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                metricId: { type: 'string' },
+                threshold: { type: 'number' },
+              },
+              required: ['metricId', 'threshold'],
+              additionalProperties: false,
+            },
+          },
+          reason: {
+            type: 'string',
+            description: 'One sentence on why this field and these metrics',
+          },
+        },
+        required: ['propertyName', 'enabled', 'metrics', 'reason'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['explanation', 'fields'],
+  additionalProperties: false,
 }
 
 // Pushes a completed call to the renderer so single-call features can show what
@@ -404,7 +494,7 @@ function registerIpc() {
 
     const { default: Anthropic } = await import('@anthropic-ai/sdk')
     const client = new Anthropic({ apiKey: settings.anthropicApiKey })
-    const model = settings.assistantModel || 'claude-haiku-4-5-20251001'
+    const model = settings.assistantModel
     const batchSize = Math.max(1, settings.classifyBatchSize)
 
     const plan = await buildClassifyPlan(client, sessionId, allPairs, settings)
@@ -569,7 +659,7 @@ function registerIpc() {
   ipcMain.handle(
     IPC.USAGE_ESTIMATE,
     (_, kind: LlmJobKind): JobEstimate => {
-      const model = getSettings().assistantModel || 'claude-haiku-4-5-20251001'
+      const model = getSettings().assistantModel
       return usage.estimateJob({ kind, model, unitCount: 1 })
     }
   )
@@ -604,30 +694,23 @@ Rules:
 - Disable fields that are administrative (IDs, timestamps, internal keys) or too sparse to be useful.
 - Threshold adjustments: lower thresholds surface more pairs (higher recall), higher thresholds are more precise. Suggest adjustments only when the default is clearly wrong for the data.
 
-Respond with ONLY valid JSON, no markdown fences, no extra text:
-{
-  "explanation": "2-3 sentence summary of the overall deduplication strategy",
-  "fields": [
-    {
-      "propertyName": "...",
-      "enabled": true,
-      "metrics": [{ "metricId": "...", "threshold": 0.85 }],
-      "reason": "One sentence explaining why this field and these metrics were chosen"
-    }
-  ]
-}`
+Return one entry per property listed above, with a short explanation of the overall deduplication strategy.`
 
     const { default: Anthropic } = await import('@anthropic-ai/sdk')
     const client = new Anthropic({ apiKey: anthropicApiKey })
-    const model = assistantModel || 'claude-haiku-4-5-20251001'
+    const model = assistantModel
     const startedAt = Date.now()
 
     let msg: Awaited<ReturnType<typeof client.messages.create>>
     try {
       msg = await client.messages.create({
         model,
-        max_tokens: 1500,
+        // max_tokens caps thinking *plus* the response. Models that think by
+        // default (Sonnet 5, Opus 5) spend part of this budget before writing
+        // any JSON, so leave headroom or the object arrives truncated.
+        max_tokens: 8000,
         messages: [{ role: 'user', content: prompt }],
+        output_config: { format: { type: 'json_schema', schema: SUGGEST_OUTPUT_SCHEMA } },
       })
     } catch (err) {
       emitCall(
@@ -664,9 +747,25 @@ Respond with ONLY valid JSON, no markdown fences, no extra text:
       })
     )
 
-    const raw = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : ''
-    // Strip optional markdown code fences
-    const jsonText = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
-    return JSON.parse(jsonText) as AISuggestion
+    // Find the text block rather than assuming index 0. On models that think by
+    // default the first block is a thinking block, which made this read '' and
+    // fail in JSON.parse with a misleading "invalid JSON" error.
+    const textBlock = msg.content.find((b) => b.type === 'text')
+    const raw = textBlock?.type === 'text' ? textBlock.text.trim() : ''
+
+    if (msg.stop_reason === 'max_tokens') {
+      throw new Error(
+        'The suggestion was cut off before it finished. Try again, or reduce the number of properties.'
+      )
+    }
+    if (!raw) {
+      throw new Error(`${model} returned no suggestion text (stop reason: ${msg.stop_reason}).`)
+    }
+
+    try {
+      return JSON.parse(raw) as AISuggestion
+    } catch {
+      throw new Error(`Could not read the suggestion from ${model}. Response began: ${raw.slice(0, 120)}`)
+    }
   })
 }

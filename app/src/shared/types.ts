@@ -297,6 +297,15 @@ export interface ClassifyPlan {
   // False when the prefix is shorter than the model's floor, in which case the
   // breakpoint is silently ignored by the API.
   cacheEligible: boolean
+  // Reviewed pairs available to draw examples from — the ceiling on how far
+  // the worked-example count can usefully be raised.
+  decidedPairCount: number
+  // Examples needed to clear the floor. null when the prefix already caches, or
+  // when there aren't enough reviewed pairs to get there.
+  suggestedFewShotCount: number | null
+  // A model whose floor this prefix already clears, cheapest first. null when
+  // the current model is already the best available option.
+  alternativeModel: { id: string; displayName: string; cacheFloor: number } | null
 }
 
 // ─── Audit ───────────────────────────────────────────────────────────────────

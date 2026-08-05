@@ -75,7 +75,7 @@ export async function sendMessage(
   const distributions: ScoreDistributions | null = null
 
   const client = new Anthropic({ apiKey: settings.anthropicApiKey })
-  const model = settings.assistantModel ?? 'claude-haiku-4-5-20251001'
+  const model = settings.assistantModel
   const systemPrompt = buildSystemPrompt(session, distributions, currentPair ?? null)
   const startedAt = Date.now()
 
