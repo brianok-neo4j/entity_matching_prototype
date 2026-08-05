@@ -173,6 +173,46 @@ async function buildClassifyPlan(
   }
 }
 
+// Schema-enforced shape for the field/metric suggestion, mirroring
+// AISuggestion. Structured output removes the need to coax JSON out of prose
+// and then strip markdown fences off it.
+const SUGGEST_OUTPUT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    explanation: { type: 'string', description: '2-3 sentence summary of the strategy' },
+    fields: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          propertyName: { type: 'string' },
+          enabled: { type: 'boolean' },
+          metrics: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                metricId: { type: 'string' },
+                threshold: { type: 'number' },
+              },
+              required: ['metricId', 'threshold'],
+              additionalProperties: false,
+            },
+          },
+          reason: {
+            type: 'string',
+            description: 'One sentence on why this field and these metrics',
+          },
+        },
+        required: ['propertyName', 'enabled', 'metrics', 'reason'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['explanation', 'fields'],
+  additionalProperties: false,
+}
+
 // Pushes a completed call to the renderer so single-call features can show what
 // they just spent. Loop-driven jobs report through their own progress channel.
 function emitCall(record: import('../shared/types').LlmCallRecord): void {
@@ -604,18 +644,7 @@ Rules:
 - Disable fields that are administrative (IDs, timestamps, internal keys) or too sparse to be useful.
 - Threshold adjustments: lower thresholds surface more pairs (higher recall), higher thresholds are more precise. Suggest adjustments only when the default is clearly wrong for the data.
 
-Respond with ONLY valid JSON, no markdown fences, no extra text:
-{
-  "explanation": "2-3 sentence summary of the overall deduplication strategy",
-  "fields": [
-    {
-      "propertyName": "...",
-      "enabled": true,
-      "metrics": [{ "metricId": "...", "threshold": 0.85 }],
-      "reason": "One sentence explaining why this field and these metrics were chosen"
-    }
-  ]
-}`
+Return one entry per property listed above, with a short explanation of the overall deduplication strategy.`
 
     const { default: Anthropic } = await import('@anthropic-ai/sdk')
     const client = new Anthropic({ apiKey: anthropicApiKey })
@@ -626,8 +655,12 @@ Respond with ONLY valid JSON, no markdown fences, no extra text:
     try {
       msg = await client.messages.create({
         model,
-        max_tokens: 1500,
+        // max_tokens caps thinking *plus* the response. Models that think by
+        // default (Sonnet 5, Opus 5) spend part of this budget before writing
+        // any JSON, so leave headroom or the object arrives truncated.
+        max_tokens: 8000,
         messages: [{ role: 'user', content: prompt }],
+        output_config: { format: { type: 'json_schema', schema: SUGGEST_OUTPUT_SCHEMA } },
       })
     } catch (err) {
       emitCall(
@@ -664,9 +697,25 @@ Respond with ONLY valid JSON, no markdown fences, no extra text:
       })
     )
 
-    const raw = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : ''
-    // Strip optional markdown code fences
-    const jsonText = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
-    return JSON.parse(jsonText) as AISuggestion
+    // Find the text block rather than assuming index 0. On models that think by
+    // default the first block is a thinking block, which made this read '' and
+    // fail in JSON.parse with a misleading "invalid JSON" error.
+    const textBlock = msg.content.find((b) => b.type === 'text')
+    const raw = textBlock?.type === 'text' ? textBlock.text.trim() : ''
+
+    if (msg.stop_reason === 'max_tokens') {
+      throw new Error(
+        'The suggestion was cut off before it finished. Try again, or reduce the number of properties.'
+      )
+    }
+    if (!raw) {
+      throw new Error(`${model} returned no suggestion text (stop reason: ${msg.stop_reason}).`)
+    }
+
+    try {
+      return JSON.parse(raw) as AISuggestion
+    } catch {
+      throw new Error(`Could not read the suggestion from ${model}. Response began: ${raw.slice(0, 120)}`)
+    }
   })
 }
