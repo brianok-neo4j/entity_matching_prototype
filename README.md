@@ -108,7 +108,7 @@ None of this is required, but the tool recognises neo4j-graphrag-python's conven
 
 - `__Entity__`, `__KGBuilder__`, `Document`, and `Chunk` labels are hidden from the label selector by default. This is just a default — edit the list in Settings for any other graph.
 - Source passages are fetched via `(:Entity)-[:FROM_CHUNK]->(:Chunk)` and displayed inline in the review panel. The query is an `OPTIONAL MATCH`, so a graph without that structure simply shows no passages rather than failing.
-- When **Neo4j storage** is enabled, reviewed pairs are written back as `(:ERPair)-[:INVOLVES]->(:Entity)` nodes, making deduplication decisions queryable from within the graph. This works on any graph.
+- When **Neo4j storage** is enabled, decided pairs are written back as `(:ERPair)-[:INVOLVES]->(:Entity)` nodes, making deduplication decisions queryable from within the graph. This works on any graph — see [Writing results back to Neo4j](#writing-results-back-to-neo4j).
 
 ---
 
@@ -129,6 +129,48 @@ That prefix is the same on every request, so it is marked for **prompt caching**
 Note that output tokens are unaffected by any of this — each pair still needs its own verdict and reason — and on Haiku output is priced at 5× input, so it dominates the bill on most runs.
 
 Costs are computed from a per-model rate table bundled with the app. Anthropic publishes no pricing API, so if a rate changes you can correct it under **Settings → Token Pricing** without waiting for a release; cache-write and cache-read rates are derived from the input rate automatically. Each recorded call is stamped with the pricing version in force at the time, so correcting a rate does not rewrite historical costs.
+
+---
+
+## Writing results back to Neo4j
+
+Off by default. Under **Settings → Neo4j Storage** there are two toggles, the second dependent on the first.
+
+**Write verdicts and audit records** creates, as each pair is decided:
+
+```
+(:ERPair {pairId, verdict, decidedAt, sessionId, note})
+  -[:INVOLVES {role: 'nodeA'|'nodeB'}]-> (the compared nodes)
+```
+
+and, for each merge pass:
+
+```
+(:ERAuditRecord {id, sessionId, mergePassId, timestamp, label, conflictStrategy})
+  -[:MERGED_INTO]-> (survivor)
+  -[:ABSORBED]->    (each absorbed node)
+```
+
+**Also record per-metric scores** adds one node per field and metric behind each verdict:
+
+```
+(:ERPair)-[:SCORED]->(:ERPairScore {pairId, fieldName, metricId, score, aboveThreshold})
+```
+
+The grain matches the internal score table — one node per `(pair, field, metric)`, not one per pair — so a pair compared on three fields with two metrics each carries up to six. Expect a few per decided pair, and note that a large session can therefore add tens of thousands of nodes.
+
+Both writes are keyed by `MERGE`, so re-deciding a pair or re-running compute updates in place rather than accumulating duplicates. Supporting indexes are created automatically on first write. Everything is best-effort: a failed graph write never fails or blocks a verdict, which is always committed to SQLite first.
+
+Scores are what make the graph independently useful — they let you interrogate the reasoning behind a decision:
+
+```cypher
+// Pairs judged distinct despite a very high similarity — check for a
+// field that is surfacing candidates it shouldn't.
+MATCH (p:ERPair {verdict: 'distinct'})-[:SCORED]->(s:ERPairScore)
+WHERE s.score > 0.95
+RETURN s.fieldName, s.metricId, count(*) AS pairs
+ORDER BY pairs DESC
+```
 
 ---
 
@@ -179,7 +221,7 @@ Open **Settings** from the top nav bar.
 | AI Auto-classify | Pairs per request (default 20), worked examples drawn from your own verdicts (default 20), requests in parallel (default 4), and whether the shared prompt prefix is cached. |
 | Token Pricing | Per-million-token input and output rates used to cost every Claude call. Ships with current rates; edit one if it changes, or reset to the bundled values. |
 | Hidden Labels | Labels excluded from schema discovery. Defaults to GraphRAG infrastructure labels. |
-| Neo4j Storage | Write pair verdicts and merge audit records back into the graph as first-class nodes. |
+| Neo4j Storage | Two toggles. The first writes verdicts and merge audit records back into the graph as first-class nodes; the second additionally records per-metric scores, and is only available when the first is on. |
 
 ---
 

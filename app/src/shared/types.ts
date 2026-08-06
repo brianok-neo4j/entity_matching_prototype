@@ -187,6 +187,7 @@ export interface AppSettings {
   excludedLabels: string[]
   theme: 'light' | 'dark' | 'system'
   useNeo4jStorage: boolean
+  useNeo4jPairScores: boolean
   pricingOverrides: PricingOverrides
   classifyBatchSize: number
   classifyFewShotCount: number

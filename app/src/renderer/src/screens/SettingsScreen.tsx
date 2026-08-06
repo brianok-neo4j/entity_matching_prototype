@@ -25,6 +25,7 @@ export default function SettingsScreen() {
     excludedLabels: ['__Entity__', '__KGBuilder__', 'Document', 'Chunk', '_Bloom_Perspective_', '_Bloom_Scene_'],
     theme: 'dark',
     useNeo4jStorage: false,
+    useNeo4jPairScores: false,
     pricingOverrides: {},
     classifyBatchSize: DEFAULT_CLASSIFY_BATCH_SIZE,
     classifyFewShotCount: DEFAULT_CLASSIFY_FEW_SHOT_COUNT,
@@ -383,17 +384,57 @@ export default function SettingsScreen() {
         {/* Neo4j Storage */}
         <section className="bg-gray-900 rounded-xl border border-gray-800 p-6 space-y-4">
           <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">Neo4j Storage</h2>
-          <label className="flex items-center gap-3 cursor-pointer">
+          <label className="flex items-start gap-3 cursor-pointer">
             <input
               type="checkbox"
               checked={form.useNeo4jStorage}
-              onChange={(e) => setForm((prev) => ({ ...prev, useNeo4jStorage: e.target.checked }))}
-              className="w-4 h-4 accent-emerald-500"
+              // Turning the parent off also clears the child, so a disabled
+              // checkbox can never sit visibly checked.
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  useNeo4jStorage: e.target.checked,
+                  useNeo4jPairScores: e.target.checked ? prev.useNeo4jPairScores : false,
+                }))
+              }
+              className="w-4 h-4 accent-emerald-500 mt-0.5"
             />
             <div>
-              <div className="text-sm text-white">Write pairs and audit records to Neo4j</div>
+              <div className="text-sm text-white">Write verdicts and audit records to Neo4j</div>
               <div className="text-xs text-gray-500 mt-0.5">
-                Creates ERPair, ERPairScore, and ERAuditRecord nodes in the connected graph.
+                Creates <span className="font-mono">ERPair</span> nodes linked to the compared
+                nodes via <span className="font-mono">INVOLVES</span>, and{' '}
+                <span className="font-mono">ERAuditRecord</span> nodes for each merge pass.
+              </div>
+            </div>
+          </label>
+
+          <label
+            className={`flex items-start gap-3 ml-7 ${
+              form.useNeo4jStorage ? 'cursor-pointer' : 'cursor-not-allowed opacity-40'
+            }`}
+            title={
+              form.useNeo4jStorage
+                ? undefined
+                : 'Enable writing to Neo4j first — scores attach to the ERPair nodes it creates'
+            }
+          >
+            <input
+              type="checkbox"
+              disabled={!form.useNeo4jStorage}
+              checked={form.useNeo4jPairScores}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, useNeo4jPairScores: e.target.checked }))
+              }
+              className="w-4 h-4 accent-emerald-500 mt-0.5 disabled:cursor-not-allowed"
+            />
+            <div>
+              <div className="text-sm text-white">Also record per-metric scores</div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                Adds one <span className="font-mono">ERPairScore</span> node per field and metric,
+                linked from its pair by <span className="font-mono">SCORED</span>. Lets you query
+                the scores behind a verdict — for example, pairs judged distinct despite a high
+                similarity. Expect a few score nodes per decided pair.
               </div>
             </div>
           </label>
