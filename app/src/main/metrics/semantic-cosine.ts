@@ -1,12 +1,23 @@
 import type { MetricModule, NodeRecord, PairScore } from './types'
 
-// Cached pipeline — loading the ONNX model is expensive; reuse across calls.
-let bgeExtractor: Awaited<ReturnType<typeof import('@huggingface/transformers').pipeline>> | null = null
+// `pipeline()` is typed as a union of every pipeline class, and those classes'
+// call signatures do not unify — calling the result is a type error however the
+// task string is written. Narrow to the one shape this file uses.
+type BGEExtractor = (
+  texts: string[],
+  options: { pooling: 'mean'; normalize: boolean }
+) => Promise<{ data: Float32Array; dims: number[] }>
 
-async function getBGE() {
+// Cached pipeline — loading the ONNX model is expensive; reuse across calls.
+let bgeExtractor: BGEExtractor | null = null
+
+async function getBGE(): Promise<BGEExtractor> {
   if (!bgeExtractor) {
     const { pipeline } = await import('@huggingface/transformers')
-    bgeExtractor = await pipeline('feature-extraction', 'Xenova/bge-base-en-v1.5')
+    bgeExtractor = (await pipeline(
+      'feature-extraction',
+      'Xenova/bge-base-en-v1.5'
+    )) as unknown as BGEExtractor
   }
   return bgeExtractor
 }
@@ -21,7 +32,7 @@ async function encodeBGE(strings: string[], onProgress?: (pct: number) => void):
 
   for (let i = 0; i < truncated.length; i += BGE_BATCH_SIZE) {
     const batch = truncated.slice(i, i + BGE_BATCH_SIZE)
-    const output = await extractor(batch, { pooling: 'mean', normalize: true }) as { data: Float32Array; dims: number[] }
+    const output = await extractor(batch, { pooling: 'mean', normalize: true })
     const dim = output.dims[1]
     for (let j = 0; j < batch.length; j++) {
       results.push(Array.from(output.data.slice(j * dim, (j + 1) * dim)))
@@ -54,10 +65,7 @@ export const semanticCosine: MetricModule = {
   defaultParams: { backend: 'bge', embeddingProperty: '' },
 
   async computePairScores(nodes, params, onProgress, signal) {
-    // `backend` is the key the Configure screen writes. Earlier sessions may
-    // carry `embeddingModel` from a time when the two disagreed and nothing
-    // read the UI's value; accept either so those configs keep working.
-    const backend = (params.backend as string) ?? (params.embeddingModel as string) ?? 'bge'
+    const backend = (params.backend as string) ?? 'bge'
     const valid = nodes.filter((n) => typeof n.value === 'string' && n.value.trim()) as (NodeRecord & { value: string })[]
     if (valid.length === 0) return []
 
