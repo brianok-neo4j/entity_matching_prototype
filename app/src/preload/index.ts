@@ -19,6 +19,7 @@ import type {
   ModelPricing,
   UsageSummary,
   UsageTotals,
+  PairEstimate,
 } from '../shared/types'
 
 // Push-event listener helpers
@@ -44,7 +45,7 @@ const api = {
   schema: {
     discover: () => ipcRenderer.invoke(IPC.SCHEMA_DISCOVER) as Promise<SchemaModel>,
     estimatePairs: (sessionId: string) =>
-      ipcRenderer.invoke(IPC.SCHEMA_ESTIMATE_PAIRS, sessionId) as Promise<number>,
+      ipcRenderer.invoke(IPC.SCHEMA_ESTIMATE_PAIRS, sessionId) as Promise<PairEstimate>,
   },
 
   // ── Sessions ─────────────────────────────────────────────────────────────────

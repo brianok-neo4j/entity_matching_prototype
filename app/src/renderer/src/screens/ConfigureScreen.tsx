@@ -9,6 +9,7 @@ import type {
   SurfacingRule,
   LlmCallRecord,
   PropertyKind,
+  PairEstimate,
 } from '../../../shared/types'
 
 type Step = 'label' | 'fields' | 'surfacing'
@@ -36,7 +37,7 @@ export default function ConfigureScreen() {
   const [surfacingMode, setSurfacingMode] = useState<'any' | 'all' | 'weighted-average'>('any')
   const [fieldSurfacing, setFieldSurfacing] = useState<Record<string, { threshold: number; weight: number }>>({})
   const [combinedThreshold, setCombinedThreshold] = useState(0.85)
-  const [estimate, setEstimate] = useState<number | null>(null)
+  const [estimate, setEstimate] = useState<PairEstimate | null>(null)
   const [estimating, setEstimating] = useState(false)
   const [creating, setCreating] = useState(false)
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null)
@@ -204,10 +205,10 @@ export default function ConfigureScreen() {
       // We need a temp session ID to estimate; create a temp draft session
       const draft = buildSessionPartial()
       const session = await window.api.session.create(draft)
-      const count = await window.api.schema.estimatePairs(session.id)
+      const result = await window.api.schema.estimatePairs(session.id)
       // Clean up: delete the temp session
       await window.api.session.delete(session.id)
-      setEstimate(count)
+      setEstimate(result)
     } catch (err) {
       addToast(`Estimate failed: ${(err as Error).message}`, 'error')
     } finally {
@@ -763,7 +764,15 @@ export default function ConfigureScreen() {
               </button>
               {estimate !== null && (
                 <span className="text-sm text-gray-400">
-                  ≈ <span className="text-white font-medium">{estimate.toLocaleString()}</span> candidate pairs
+                  {estimate.exact ? '' : '≈ '}
+                  <span className="text-white font-medium">{estimate.count.toLocaleString()}</span>{' '}
+                  {estimate.count === 1 ? 'pair' : 'pairs'} surfaced by this rule
+                  {!estimate.exact && (
+                    <span className="text-gray-500">
+                      {' '}— sampled {estimate.sampledNodes?.toLocaleString()} of{' '}
+                      {estimate.totalNodes?.toLocaleString()} nodes
+                    </span>
+                  )}
                 </span>
               )}
               <div className="flex-1" />
