@@ -18,7 +18,9 @@ export function tokenize(s: string, mode: string): string[] {
 export function tokenBucketPairs(nodes: StringNode[], maxBucketSize = 500): [string, string][] {
   const buckets = new Map<string, string[]>()
   for (const { id, value } of nodes) {
-    for (const tok of tokenize(value, 'whitespace-lowercase')) {
+    // Distinct tokens only. "Las Vegas / LAS" tokenizes to two `las`, which
+    // would put the id in that bucket twice and pair the node with itself.
+    for (const tok of new Set(tokenize(value, 'whitespace-lowercase'))) {
       if (!buckets.has(tok)) buckets.set(tok, [])
       buckets.get(tok)!.push(id)
     }
@@ -31,6 +33,7 @@ export function tokenBucketPairs(nodes: StringNode[], maxBucketSize = 500): [str
     if (ids.length < 2 || ids.length > maxBucketSize) continue
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) {
+        if (ids[i] === ids[j]) continue
         const key = ids[i] < ids[j] ? `${ids[i]}|${ids[j]}` : `${ids[j]}|${ids[i]}`
         if (!seen.has(key)) {
           seen.add(key)

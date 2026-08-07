@@ -8,6 +8,7 @@ import type {
   MetricConfig,
   SurfacingRule,
   LlmCallRecord,
+  PropertyKind,
 } from '../../../shared/types'
 
 type Step = 'label' | 'fields' | 'surfacing'
@@ -63,15 +64,38 @@ export default function ConfigureScreen() {
 
     setSelectedLabel(labelMeta)
 
-    const draft: DraftField[] = session!.fields.map((fc) => {
-      const propMeta = labelMeta.properties.find((p) => p.name === fc.propertyName)
-      return {
-        propertyName: fc.propertyName,
-        enabled: true,
-        kind: propMeta?.inferredKind ?? 'name',
-        metrics: fc.metrics.map((m) => ({ metricId: m.metricId, params: { ...m.params }, threshold: m.threshold })),
-      }
+    // Show every comparable property, not just the ones the session kept —
+    // otherwise a field deselected on an earlier pass can never be selected again.
+    const saved = new Map(session!.fields.map((fc) => [fc.propertyName, fc]))
+    const fromSaved = (fc: FieldConfig, kind: PropertyKind): DraftField => ({
+      propertyName: fc.propertyName,
+      enabled: true,
+      kind,
+      metrics: fc.metrics.map((m) => ({ metricId: m.metricId, params: { ...m.params }, threshold: m.threshold })),
     })
+
+    const draft: DraftField[] = labelMeta.properties
+      .filter((p) => !SKIP_KINDS.includes(p.inferredKind))
+      .map((p) => {
+        const fc = saved.get(p.name)
+        if (fc) return fromSaved(fc, p.inferredKind)
+        const suggested = suggestMetrics(p.inferredKind)
+        return {
+          propertyName: p.name,
+          enabled: false,
+          kind: p.inferredKind,
+          metrics: suggested.map((m) => ({
+            metricId: m.id,
+            params: { ...m.defaultParams },
+            threshold: m.defaultThreshold,
+          })),
+        }
+      })
+
+    // A saved field the schema no longer reports still has verdicts riding on it.
+    for (const fc of session!.fields) {
+      if (!draft.some((d) => d.propertyName === fc.propertyName)) draft.push(fromSaved(fc, 'name'))
+    }
     setFields(draft)
 
     const sf: Record<string, { threshold: number; weight: number }> = {}
@@ -386,6 +410,19 @@ export default function ConfigureScreen() {
               </div>
             </div>
 
+            <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
+              <p className="text-xs text-gray-400">
+                <span className="text-gray-300 font-medium">
+                  Thresholds on this screen do not decide which pairs you review.
+                </span>{' '}
+                They mark a score as a match — the ✓ and the bar colours in the review panel — and
+                they are given to the AI as context when it classifies. Which pairs enter the queue
+                is decided entirely by the <span className="text-gray-300">Surfacing Rule</span> on
+                the next step. You can also re-tune these against the real score distribution after
+                computing.
+              </p>
+            </div>
+
             {aiExplanation && (
               <div className="bg-indigo-950 border border-indigo-800 rounded-xl p-4 space-y-2">
                 <div className="flex items-center justify-between">
@@ -599,11 +636,58 @@ export default function ConfigureScreen() {
               ))}
             </div>
 
-            <p className="text-xs text-gray-500">
-              {surfacingMode === 'any' && 'Pair surfaces if any field score meets its threshold.'}
-              {surfacingMode === 'all' && 'Pair surfaces only if ALL field scores meet their thresholds.'}
-              {surfacingMode === 'weighted-average' && 'Weighted average of field scores must meet the combined threshold.'}
-            </p>
+            <div className="text-xs text-gray-500 space-y-1.5">
+              <p>
+                A field&apos;s score is its{' '}
+                <span className="text-gray-300">best-scoring metric</span> — if any one metric you
+                chose for that field reaches the threshold below, the field counts as a match. Adding
+                a lenient metric to a field therefore lowers that field&apos;s bar.
+              </p>
+              {surfacingMode === 'any' && (
+                <>
+                  <p className="text-gray-400">
+                    Surfaces a pair when <span className="text-gray-300">at least one</span> field
+                    reaches its threshold. Other fields can score anything, including nothing at all.
+                  </p>
+                  <p>
+                    If a property is missing from one or both nodes, that field simply scores 0 and
+                    cannot surface the pair on its own — but any other field still can, so the pair
+                    may well appear.
+                  </p>
+                </>
+              )}
+              {surfacingMode === 'all' && (
+                <>
+                  <p className="text-gray-400">
+                    Surfaces a pair only when <span className="text-gray-300">every comparable</span>{' '}
+                    field reaches its threshold.
+                  </p>
+                  <p>
+                    A field is comparable when both nodes actually carry the property. Fields one or
+                    both nodes are missing are skipped rather than counted as a failure, so a pair is
+                    never rejected for a comparison that was never possible — it is judged on the
+                    fields the two records share.
+                  </p>
+                  <p>
+                    A field both nodes do have still has to meet its threshold. Scoring poorly is a
+                    comparison the pair lost; having nothing to compare is not.
+                  </p>
+                </>
+              )}
+              {surfacingMode === 'weighted-average' && (
+                <>
+                  <p className="text-gray-400">
+                    Surfaces a pair when the weighted sum of field scores reaches the combined
+                    threshold. Per-field thresholds above are ignored in this mode — only the weights
+                    and the combined threshold apply.
+                  </p>
+                  <p>
+                    A missing property contributes 0 to the sum rather than excluding the pair, so a
+                    strong showing on the remaining fields can still surface it.
+                  </p>
+                </>
+              )}
+            </div>
 
             {/* Per-field thresholds / weights */}
             <div className="space-y-3">

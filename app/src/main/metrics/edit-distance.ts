@@ -24,6 +24,11 @@ export const editDistance: MetricModule = {
   defaultThreshold: 0.85,
   defaultParams: {},
 
+  scorePair(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return null
+    return 1 - levenshtein(a, b) / Math.max(a.length, b.length, 1)
+  },
+
   async computePairScores(nodes, _params, onProgress, signal) {
     const strings = nodes
       .map((n) => ({ id: n.id, val: typeof n.value === 'string' ? n.value : null }))

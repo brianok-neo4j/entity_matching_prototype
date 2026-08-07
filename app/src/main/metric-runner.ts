@@ -27,6 +27,11 @@ export async function runMetrics(
   // Node snapshots captured during field fetches — no second round-trip needed
   const snapshotMap = new Map<string, { id: string; properties: Record<string, unknown> }>()
 
+  // Per field, the nodes that actually carry the property. Lets surfacing tell
+  // "the property is absent" apart from "both have it but they scored poorly" —
+  // metrics emit scores sparsely, so a missing score alone means neither.
+  const fieldNodeIds = new Map<string, Set<string>>()
+
   try {
     for (const fieldConfig of session.fields) {
       for (const metricConfig of fieldConfig.metrics) {
@@ -54,6 +59,9 @@ export async function runMetrics(
         return { id, value: r.get('val') }
       })
       console.log(`[compute] ${nodes.length} nodes fetched for ${fieldConfig.propertyName}`)
+      // The query above already filters to nodes that have the property, so this
+      // is the exact set for which the field can be compared at all.
+      fieldNodeIds.set(fieldConfig.propertyName, new Set(nodes.map((n) => n.id)))
 
       for (const metricConfig of fieldConfig.metrics) {
         if (signal.aborted) break
@@ -69,6 +77,7 @@ export async function runMetrics(
         console.log(`[compute] ${metricConfig.metricId} done — ${rawScores.length} pair scores`)
 
         for (const { idA, idB, score } of rawScores) {
+          if (idA === idB) continue
           const pairId = stablePairId(idA, idB)
           if (!pairScores.has(pairId)) pairScores.set(pairId, { idA, idB, scores: [] })
           pairScores.get(pairId)!.scores.push({
@@ -81,11 +90,52 @@ export async function runMetrics(
       }
     }
 
+    // Fill in the scores candidate generation never produced.
+    //
+    // Every bucketing metric only emits pairs whose values share a token, so a
+    // pair can be a candidate on one field and have no score at all on another
+    // the two nodes both carry. Surfacing cannot tell that apart from a genuine
+    // low score, which made All mode reject pairs on comparisons that were
+    // never attempted. Ask the metric for the real number instead.
+    let densified = 0
+    const tDense = Date.now()
+    for (const { idA, idB, scores } of pairScores.values()) {
+      const propsA = snapshotMap.get(idA)?.properties
+      const propsB = snapshotMap.get(idB)?.properties
+      if (!propsA || !propsB) continue
+      const have = new Set(scores.map((s) => `${s.fieldName}|${s.metricId}`))
+
+      for (const fieldConfig of session.fields) {
+        // properties() omits nulls, so absence here means the node genuinely
+        // lacks the property and there is nothing to compare.
+        const a = propsA[fieldConfig.propertyName]
+        const b = propsB[fieldConfig.propertyName]
+        if (a === undefined || b === undefined) continue
+
+        for (const metricConfig of fieldConfig.metrics) {
+          if (have.has(`${fieldConfig.propertyName}|${metricConfig.metricId}`)) continue
+          const metric = getMetric(metricConfig.metricId)
+          if (!metric.scorePair) continue
+          const score = metric.scorePair(a, b, metricConfig.params)
+          if (score === null) continue
+          scores.push({
+            metricId: metricConfig.metricId,
+            fieldName: fieldConfig.propertyName,
+            score,
+            aboveThreshold: score >= metricConfig.threshold,
+          })
+          densified++
+        }
+      }
+    }
+    console.log(`[compute] densify: ${densified} scores filled in ${Date.now() - tDense}ms`)
+
     // Surface pairs using snapshots already in memory — no extra query
     type SurfacedEntry = { pairId: string; idA: string; idB: string; scores: MetricScore[] }
     const surfacedEntries: SurfacedEntry[] = []
     for (const [pairId, { idA, idB, scores }] of pairScores) {
-      if (surfaced(scores, session)) surfacedEntries.push({ pairId, idA, idB, scores })
+      if (surfaced(scores, session, idA, idB, fieldNodeIds))
+        surfacedEntries.push({ pairId, idA, idB, scores })
     }
     console.log(`[compute] ${surfacedEntries.length} pairs surfaced`)
 
@@ -120,7 +170,13 @@ function stablePairId(idA: string, idB: string): string {
   return createHash('sha1').update(sorted.join('|')).digest('hex').slice(0, 12)
 }
 
-function surfaced(scores: MetricScore[], session: Session): boolean {
+function surfaced(
+  scores: MetricScore[],
+  session: Session,
+  idA: string,
+  idB: string,
+  fieldNodeIds: Map<string, Set<string>>
+): boolean {
   const { mode, fields } = session.surfacingRule
 
   // Field score = max across metrics for that field
@@ -128,6 +184,14 @@ function surfaced(scores: MetricScore[], session: Session): boolean {
   for (const score of scores) {
     const current = fieldScores.get(score.fieldName) ?? 0
     fieldScores.set(score.fieldName, Math.max(current, score.score))
+  }
+
+  // A field can only be judged when both nodes carry the property. Absent is
+  // not the same as scoring zero: a pair should not fail a comparison that was
+  // never possible.
+  const comparable = (propertyName: string): boolean => {
+    const ids = fieldNodeIds.get(propertyName)
+    return ids !== undefined && ids.has(idA) && ids.has(idB)
   }
 
   if (mode === 'any') {
@@ -139,11 +203,18 @@ function surfaced(scores: MetricScore[], session: Session): boolean {
   }
 
   if (mode === 'all') {
+    // Every field the pair can actually be compared on must meet its threshold.
+    // Fields one or both nodes lack are skipped rather than counted as a
+    // failure — otherwise sparse data excludes pairs that match on everything
+    // they share. A field both nodes have but that produced no score is still a
+    // failure: that is a real comparison the pair lost.
+    let compared = 0
     for (const fc of fields) {
-      const fs = fieldScores.get(fc.propertyName) ?? 0
-      if (fs < fc.threshold) return false
+      if (!comparable(fc.propertyName)) continue
+      compared++
+      if ((fieldScores.get(fc.propertyName) ?? 0) < fc.threshold) return false
     }
-    return true
+    return compared > 0
   }
 
   // weighted-average
