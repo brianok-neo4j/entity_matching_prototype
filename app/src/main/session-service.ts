@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { legacyPairId } from './pair-id'
 import { getDb } from './db'
 import type { Session, CandidatePair, DecidedBy, MetricScore, Verdict } from '../shared/types'
 
@@ -156,17 +157,28 @@ export function upsertPairs(pairs: CandidatePair[]): void {
     INSERT OR REPLACE INTO pair_scores(pair_id, metric_id, field_name, score, above_threshold)
     VALUES (?, ?, ?, ?, ?)
   `)
+  // Rows written before pair ids were session-scoped carry the unscoped id.
+  // Recompute would otherwise miss them and insert a second copy of every pair,
+  // leaving the queue holding both — the old row with its verdict and a new
+  // pending one. Match only within this session, so a row another session owns
+  // is left alone and this session gets its own copy, which is the point of the
+  // scoped id. Remove once no pre-scoping session is still in use.
+  const findLegacy = db.prepare(`SELECT id FROM pairs WHERE id = ? AND session_id = ?`)
+
   const tx = db.transaction(() => {
     for (const pair of pairs) {
+      const legacy = legacyPairId(pair.nodeA.id, pair.nodeB.id)
+      const id = findLegacy.get(legacy, pair.sessionId) ? legacy : pair.id
+
       insertPair.run(
-        pair.id, pair.sessionId,
+        id, pair.sessionId,
         JSON.stringify(pair.nodeA), JSON.stringify(pair.nodeB),
         pair.verdict,
         pair.decidedAt ? new Date(pair.decidedAt).getTime() : null,
         pair.note ?? null
       )
       for (const score of pair.scores) {
-        upsertScore.run(pair.id, score.metricId, score.fieldName, score.score, score.aboveThreshold ? 1 : 0)
+        upsertScore.run(id, score.metricId, score.fieldName, score.score, score.aboveThreshold ? 1 : 0)
       }
     }
   })
