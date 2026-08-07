@@ -30,7 +30,7 @@ export async function runMetrics(
   const neo4jSession = driver.session()
 
   // Map pairId → accumulated scores
-  const pairScores = new Map<string, { idA: string; idB: string; scores: MetricScore[] }>()
+  const pairScores: PairScoreMap = new Map()
   // Node snapshots captured during field fetches — no second round-trip needed
   const snapshotMap = new Map<string, { id: string; properties: Record<string, unknown> }>()
 
@@ -111,8 +111,8 @@ export async function runMetrics(
     // Surface pairs using snapshots already in memory — no extra query
     type SurfacedEntry = { pairId: string; idA: string; idB: string; scores: MetricScore[] }
     const surfacedEntries: SurfacedEntry[] = []
-    for (const [pairId, { idA, idB, scores }] of pairScores) {
-      if (surfaced(scores, session, idA, idB, fieldNodeIds))
+    for (const [pairId, { idA, idB, scores, abstained }] of pairScores) {
+      if (surfaced(scores, session, idA, idB, fieldNodeIds, abstained))
         surfacedEntries.push({ pairId, idA, idB, scores })
     }
     console.log(`[compute] ${surfacedEntries.length} pairs surfaced`)
@@ -153,7 +153,8 @@ function surfaced(
   session: Session,
   idA: string,
   idB: string,
-  fieldNodeIds: Map<string, Set<string>>
+  fieldNodeIds: Map<string, Set<string>>,
+  abstained?: Set<string>
 ): boolean {
   const { mode, fields } = session.surfacingRule
 
@@ -166,8 +167,11 @@ function surfaced(
 
   // A field can only be judged when both nodes carry the property. Absent is
   // not the same as scoring zero: a pair should not fail a comparison that was
-  // never possible.
+  // never possible. Both nodes must carry the property, and some metric must have been willing
+  // to score it. A field every metric declined is no more judgeable than one the
+  // nodes do not have.
   const comparable = (propertyName: string): boolean => {
+    if (abstained?.has(propertyName)) return false
     const ids = fieldNodeIds.get(propertyName)
     return ids !== undefined && ids.has(idA) && ids.has(idB)
   }
@@ -200,9 +204,13 @@ function surfaced(
   // removed or a slider is dragged, and an unnormalized sum silently rescales
   // the combined threshold: five fields left holding 1/9 each cap the total at
   // 0.56, so a 0.85 threshold can never be met however well the pair matches.
-  const totalWeight = fields.reduce((sum, fc) => sum + fc.weight, 0)
+  // A field every metric declined is dropped from both sides of the ratio, so
+  // it neither helps nor hurts. Leaving it only in the denominator would penalise
+  // a pair for a comparison nothing was willing to make.
+  const usable = fields.filter((fc) => !abstained?.has(fc.propertyName))
+  const totalWeight = usable.reduce((sum, fc) => sum + fc.weight, 0)
   if (totalWeight <= 0) return false
-  const weighted = fields.reduce((sum, fc) => {
+  const weighted = usable.reduce((sum, fc) => {
     return sum + fc.weight * (fieldScores.get(fc.propertyName) ?? 0)
   }, 0)
   return weighted / totalWeight >= (session.surfacingRule.combinedThreshold ?? 0.85)
@@ -250,18 +258,26 @@ function computeDistributions(
   return { all: toPercentiles(allScores), pending: toPercentiles(pendingScores) }
 }
 
-type PairScoreMap = Map<string, { idA: string; idB: string; scores: MetricScore[] }>
+type PairEntry = { idA: string; idB: string; scores: MetricScore[]; abstained?: Set<string> }
+type PairScoreMap = Map<string, PairEntry>
 type NodeSnapshot = { id: string; properties: Record<string, unknown> }
 
 // Fills in the scores candidate generation never produced, for every field the
 // two nodes both carry. Returns how many it added.
+//
+// Also records fields where both nodes have the property but no metric would
+// produce a number — a metric can decline a comparison it cannot make well, as
+// edit distance does below its minimum length. That is not the pair losing a
+// comparison, so surfacing must not read it as one.
 function densify(session: Session, pairScores: PairScoreMap, snapshots: Map<string, NodeSnapshot>): number {
   let densified = 0
-  for (const { idA, idB, scores } of pairScores.values()) {
+  for (const entry of pairScores.values()) {
+    const { idA, idB, scores } = entry
     const propsA = snapshots.get(idA)?.properties
     const propsB = snapshots.get(idB)?.properties
     if (!propsA || !propsB) continue
     const have = new Set(scores.map((s) => `${s.fieldName}|${s.metricId}`))
+    const scoredFields = new Set(scores.map((s) => s.fieldName))
 
     for (const fieldConfig of session.fields) {
       // properties() omits nulls, so absence here means the node genuinely
@@ -282,7 +298,13 @@ function densify(session: Session, pairScores: PairScoreMap, snapshots: Map<stri
           score,
           aboveThreshold: score >= metricConfig.threshold,
         })
+        scoredFields.add(fieldConfig.propertyName)
         densified++
+      }
+
+      if (!scoredFields.has(fieldConfig.propertyName)) {
+        if (!entry.abstained) entry.abstained = new Set()
+        entry.abstained.add(fieldConfig.propertyName)
       }
     }
   }
@@ -408,8 +430,8 @@ async function surfacedCount(session: Session, nodes: NodeSnapshot[]): Promise<n
   densify(session, pairScores, snapshots)
 
   let count = 0
-  for (const { idA, idB, scores } of pairScores.values()) {
-    if (surfaced(scores, session, idA, idB, fieldNodeIds)) count++
+  for (const { idA, idB, scores, abstained } of pairScores.values()) {
+    if (surfaced(scores, session, idA, idB, fieldNodeIds, abstained)) count++
   }
   return count
 }

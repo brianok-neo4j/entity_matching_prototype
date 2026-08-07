@@ -59,6 +59,10 @@ The practical consequence is worth stating plainly. If you configure a session w
 
 Candidate pairs are generated with a **token-bucket** approach (O(n × tokens), not O(n²)), so the tool stays fast even on large label sets.
 
+**Edit Distance and `Min string length`.** The Levenshtein ratio is a step function of length: on a four-character value one edit costs a flat 0.25, on a two-character value it costs 0.5. Below a few characters the score reports length more than similarity, so the metric **declines to score** a pair where either value is shorter than `Min string length` (default 3) rather than returning a number no threshold can use sensibly.
+
+Declining is not failing. A field where every configured metric declined is skipped by All mode and dropped from both sides of the weighted-average ratio, exactly as a property neither node carries would be — so putting Edit Distance on a two-character field such as a US state code costs you that field, not your whole queue.
+
 ---
 
 ## Surfacing rules
