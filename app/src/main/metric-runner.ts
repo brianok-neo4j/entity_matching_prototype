@@ -89,6 +89,46 @@ export async function runMetrics(
       }
     }
 
+    // Fill in the scores candidate generation never produced.
+    //
+    // Every bucketing metric only emits pairs whose values share a token, so a
+    // pair can be a candidate on one field and have no score at all on another
+    // the two nodes both carry. Surfacing cannot tell that apart from a genuine
+    // low score, which made All mode reject pairs on comparisons that were
+    // never attempted. Ask the metric for the real number instead.
+    let densified = 0
+    const tDense = Date.now()
+    for (const { idA, idB, scores } of pairScores.values()) {
+      const propsA = snapshotMap.get(idA)?.properties
+      const propsB = snapshotMap.get(idB)?.properties
+      if (!propsA || !propsB) continue
+      const have = new Set(scores.map((s) => `${s.fieldName}|${s.metricId}`))
+
+      for (const fieldConfig of session.fields) {
+        // properties() omits nulls, so absence here means the node genuinely
+        // lacks the property and there is nothing to compare.
+        const a = propsA[fieldConfig.propertyName]
+        const b = propsB[fieldConfig.propertyName]
+        if (a === undefined || b === undefined) continue
+
+        for (const metricConfig of fieldConfig.metrics) {
+          if (have.has(`${fieldConfig.propertyName}|${metricConfig.metricId}`)) continue
+          const metric = getMetric(metricConfig.metricId)
+          if (!metric.scorePair) continue
+          const score = metric.scorePair(a, b, metricConfig.params)
+          if (score === null) continue
+          scores.push({
+            metricId: metricConfig.metricId,
+            fieldName: fieldConfig.propertyName,
+            score,
+            aboveThreshold: score >= metricConfig.threshold,
+          })
+          densified++
+        }
+      }
+    }
+    console.log(`[compute] densify: ${densified} scores filled in ${Date.now() - tDense}ms`)
+
     // Surface pairs using snapshots already in memory — no extra query
     type SurfacedEntry = { pairId: string; idA: string; idB: string; scores: MetricScore[] }
     const surfacedEntries: SurfacedEntry[] = []

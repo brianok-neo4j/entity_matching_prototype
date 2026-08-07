@@ -17,6 +17,12 @@ export const exactMatch: MetricModule = {
   defaultThreshold: 1.0,
   defaultParams: { normalization: 'nfkd-lower-strip' },
 
+  scorePair(a, b, params) {
+    const mode = (params.normalization as string) ?? 'nfkd-lower-strip'
+    if (typeof a !== 'string' || typeof b !== 'string') return null
+    return normalize(a, mode) === normalize(b, mode) ? 1 : 0
+  },
+
   async computePairScores(nodes, params, onProgress, signal) {
     const mode = (params.normalization as string) ?? 'nfkd-lower-strip'
     const strings = nodes.map((n) => ({

@@ -8,6 +8,11 @@ export const numericProximity: MetricModule = {
   defaultThreshold: 0.95,
   defaultParams: { relativeTolerance: 0.05 },
 
+  scorePair(a, b) {
+    if (typeof a !== 'number' || typeof b !== 'number') return null
+    return Math.max(0, 1 - Math.abs(a - b) / Math.max(Math.abs(a), Math.abs(b), 1))
+  },
+
   async computePairScores(nodes, _params, onProgress, signal) {
     const nums = nodes
       .map((n) => ({ id: n.id, val: typeof n.value === 'number' ? n.value : null }))

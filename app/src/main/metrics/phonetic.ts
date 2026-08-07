@@ -65,6 +65,11 @@ export const phoneticMetric: MetricModule = {
   defaultThreshold: 1.0,
   defaultParams: {},
 
+  scorePair(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return null
+    return metaphone(a) === metaphone(b) ? 1 : 0
+  },
+
   async computePairScores(nodes, _params, onProgress, signal) {
     const coded = nodes
       .map((n) => ({

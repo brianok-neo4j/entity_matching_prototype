@@ -48,6 +48,11 @@ export const jaroWinklerMetric: MetricModule = {
   defaultThreshold: 0.85,
   defaultParams: { prefixWeight: 0.1 },
 
+  scorePair(a, b, params) {
+    if (typeof a !== 'string' || typeof b !== 'string') return null
+    return jaroWinkler(a.toLowerCase(), b.toLowerCase(), (params.prefixWeight as number) ?? 0.1)
+  },
+
   async computePairScores(nodes, params, onProgress, signal) {
     const p = (params.prefixWeight as number) ?? 0.1
     const strings = nodes

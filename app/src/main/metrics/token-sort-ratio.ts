@@ -28,6 +28,12 @@ export const tokenSortRatio: MetricModule = {
   defaultThreshold: 0.85,
   defaultParams: {},
 
+  scorePair(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string') return null
+    const norm = (v: string): string => tokenize(v, 'whitespace-lowercase').sort().join(' ')
+    return sequenceRatio(norm(a), norm(b))
+  },
+
   async computePairScores(nodes, _params, onProgress, signal) {
     const sorted = nodes
       .map((n) => ({
