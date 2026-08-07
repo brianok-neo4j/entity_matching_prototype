@@ -386,6 +386,19 @@ export default function ConfigureScreen() {
               </div>
             </div>
 
+            <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
+              <p className="text-xs text-gray-400">
+                <span className="text-gray-300 font-medium">
+                  Thresholds on this screen do not decide which pairs you review.
+                </span>{' '}
+                They mark a score as a match — the ✓ and the bar colours in the review panel — and
+                they are given to the AI as context when it classifies. Which pairs enter the queue
+                is decided entirely by the <span className="text-gray-300">Surfacing Rule</span> on
+                the next step. You can also re-tune these against the real score distribution after
+                computing.
+              </p>
+            </div>
+
             {aiExplanation && (
               <div className="bg-indigo-950 border border-indigo-800 rounded-xl p-4 space-y-2">
                 <div className="flex items-center justify-between">
@@ -599,11 +612,53 @@ export default function ConfigureScreen() {
               ))}
             </div>
 
-            <p className="text-xs text-gray-500">
-              {surfacingMode === 'any' && 'Pair surfaces if any field score meets its threshold.'}
-              {surfacingMode === 'all' && 'Pair surfaces only if ALL field scores meet their thresholds.'}
-              {surfacingMode === 'weighted-average' && 'Weighted average of field scores must meet the combined threshold.'}
-            </p>
+            <div className="text-xs text-gray-500 space-y-1.5">
+              <p>
+                A field&apos;s score is its{' '}
+                <span className="text-gray-300">best-scoring metric</span> — if any one metric you
+                chose for that field reaches the threshold below, the field counts as a match. Adding
+                a lenient metric to a field therefore lowers that field&apos;s bar.
+              </p>
+              {surfacingMode === 'any' && (
+                <>
+                  <p className="text-gray-400">
+                    Surfaces a pair when <span className="text-gray-300">at least one</span> field
+                    reaches its threshold. Other fields can score anything, including nothing at all.
+                  </p>
+                  <p>
+                    If a property is missing from one or both nodes, that field simply scores 0 and
+                    cannot surface the pair on its own — but any other field still can, so the pair
+                    may well appear.
+                  </p>
+                </>
+              )}
+              {surfacingMode === 'all' && (
+                <>
+                  <p className="text-gray-400">
+                    Surfaces a pair only when <span className="text-gray-300">every</span> field
+                    reaches its threshold.
+                  </p>
+                  <p className="text-amber-500">
+                    A property missing from either node scores 0 and fails its threshold, so the pair
+                    is excluded — however well it matches on everything else. On sparse data this
+                    mode can return very few pairs.
+                  </p>
+                </>
+              )}
+              {surfacingMode === 'weighted-average' && (
+                <>
+                  <p className="text-gray-400">
+                    Surfaces a pair when the weighted sum of field scores reaches the combined
+                    threshold. Per-field thresholds above are ignored in this mode — only the weights
+                    and the combined threshold apply.
+                  </p>
+                  <p>
+                    A missing property contributes 0 to the sum rather than excluding the pair, so a
+                    strong showing on the remaining fields can still surface it.
+                  </p>
+                </>
+              )}
+            </div>
 
             {/* Per-field thresholds / weights */}
             <div className="space-y-3">

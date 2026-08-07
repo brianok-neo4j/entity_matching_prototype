@@ -143,11 +143,27 @@ export default function ComputeScreen() {
         {/* Score distributions with histograms */}
         {done && dists && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-white">Score Distributions</h3>
-              <p className="text-xs text-gray-500">
-                Click or drag the red threshold marker to adjust before proceeding.
-              </p>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-white">Score Distributions</h3>
+                <p className="text-xs text-gray-500">
+                  Click or drag the red threshold marker to adjust before proceeding.
+                </p>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3">
+                <p className="text-xs text-gray-400">
+                  These are the same thresholds you set on{' '}
+                  <span className="text-gray-300">Fields &amp; Metrics</span>, now shown against the
+                  scores your data actually produced — so you can place each one where the
+                  distribution suggests rather than guessing up front. Changes are saved back to the
+                  session when you proceed.
+                </p>
+                <p className="text-xs text-gray-500 mt-1.5">
+                  As before, these mark a score as a match for review and for the AI. They do not
+                  change which pairs are in the queue — that was fixed by the Surfacing Rule when
+                  compute ran.
+                </p>
+              </div>
             </div>
 
             {dists.all.map((d) => {
