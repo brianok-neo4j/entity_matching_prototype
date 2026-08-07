@@ -349,10 +349,10 @@ function registerIpc() {
   // Pairs
   ipcMain.handle(IPC.PAIRS_LIST, (_, sessionId: string) => sessions.listPairs(sessionId))
   ipcMain.handle(IPC.PAIRS_SET_VERDICT, async (_, pairId: string, verdict: Verdict) => {
-    sessions.setVerdict(pairId, verdict)
+    sessions.setVerdict(pairId, verdict, 'human')
     // Best-effort Neo4j write — never blocks or fails the verdict
     const pair = sessions.getPair(pairId)
-    if (pair) neo4jStorage.writePairVerdict({ ...pair, verdict }).catch(() => {})
+    if (pair) neo4jStorage.writePairVerdict({ ...pair, verdict, decidedBy: 'human' }).catch(() => {})
   })
   ipcMain.handle(IPC.PAIRS_SET_NOTE, (_, pairId: string, note: string) =>
     sessions.setNote(pairId, note)
@@ -417,6 +417,9 @@ function registerIpc() {
       absorbedProperties: JSON.parse(r.absorbed_props as string),
       scores: JSON.parse(r.scores_json as string),
       conflictStrategy: r.conflict_strategy,
+      // Records written before provenance existed have no attribution; report
+      // that honestly rather than implying a human reviewed them.
+      decidedBy: JSON.parse((r.decided_by_json as string) || '{}'),
     }))
   })
 
@@ -573,12 +576,12 @@ function registerIpc() {
         const written: CandidatePair[] = []
         for (const r of results) {
           const note = `[AI] ${r.reason}`
-          sessions.setVerdict(r.pairId, r.verdict)
+          sessions.setVerdict(r.pairId, r.verdict, 'ai')
           sessions.setNote(r.pairId, note)
           classified++
           decided.set(r.pairId, { verdict: r.verdict, note })
           const pair = batch.find((p) => p.id === r.pairId)
-          if (pair) written.push({ ...pair, verdict: r.verdict, note })
+          if (pair) written.push({ ...pair, verdict: r.verdict, note, decidedBy: 'ai' })
         }
 
         // Batched, and best-effort: a Neo4j write must never fail a verdict

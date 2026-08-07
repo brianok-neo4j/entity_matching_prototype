@@ -142,6 +142,7 @@ export interface CandidatePair {
   verdict: Verdict
   decidedAt?: string
   note?: string
+  decidedBy?: DecidedBy | null
 }
 
 // ─── Score distributions ──────────────────────────────────────────────────────
@@ -312,6 +313,8 @@ export interface ClassifyPlan {
 
 // ─── Audit ───────────────────────────────────────────────────────────────────
 
+export type DecidedBy = 'human' | 'ai'
+
 export interface AuditRecord {
   id: string
   sessionId: string
@@ -324,4 +327,7 @@ export interface AuditRecord {
   absorbedProperties: Record<string, unknown>[]
   scores: MetricScore[]
   conflictStrategy: 'discard' | 'overwrite' | 'combine'
+  // How the pairs behind this merge were decided. A merge founded entirely on
+  // AI verdicts is a materially different thing from one a human reviewed.
+  decidedBy: { human: number; ai: number; unknown: number }
 }

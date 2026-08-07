@@ -122,17 +122,36 @@ function migrate(db: Database.Database): void {
   `)
 
   addColumn(db, 'llm_jobs', 'variant', `TEXT NOT NULL DEFAULT ''`)
+
+  // Who decided each pair. Nullable: a pending pair has no decider.
+  if (addColumn(db, 'pairs', 'decided_by', 'TEXT')) {
+    // Existing rows predate the column. Before it, the only signal was the
+    // '[AI] ' prefix auto-classify writes onto its notes, so recover what we
+    // can from that rather than mislabelling every historical verdict.
+    db.exec(`
+      UPDATE pairs SET decided_by = CASE
+        WHEN verdict = 'pending' THEN NULL
+        WHEN note LIKE '[AI]%'   THEN 'ai'
+        ELSE 'human'
+      END
+    `)
+  }
+
+  addColumn(db, 'audit_records', 'decided_by_json', `TEXT NOT NULL DEFAULT '{}'`)
 }
 
 // CREATE TABLE IF NOT EXISTS won't add a column to a table that already exists,
 // so schema additions made after a table has shipped go through here.
+// Returns true when the column was added, so callers can run a one-time
+// backfill without repeating it on every launch.
 function addColumn(
   db: Database.Database,
   table: string,
   column: string,
   definition: string
-): void {
+): boolean {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
-  if (columns.some((c) => c.name === column)) return
+  if (columns.some((c) => c.name === column)) return false
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  return true
 }

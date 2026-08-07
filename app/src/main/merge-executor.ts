@@ -263,12 +263,26 @@ function writeAuditRecord(
     }),
     scores: allScores,
     conflictStrategy: conflictStrategy as AuditRecord['conflictStrategy'],
+    // Attribution for the pairs this merge rests on. A merge is destructive and
+    // irreversible, so the record should say whether a human ever looked at the
+    // evidence for it.
+    decidedBy: pairs.reduce(
+      (acc, p) => {
+        if (p.verdict === 'pending') return acc
+        if (p.decidedBy === 'ai') acc.ai++
+        else if (p.decidedBy === 'human') acc.human++
+        else acc.unknown++
+        return acc
+      },
+      { human: 0, ai: 0, unknown: 0 }
+    ),
   }
 
   db.prepare(`
     INSERT INTO audit_records(id, session_id, merge_pass_id, timestamp, label, survivor_id,
-      survivor_props, absorbed_ids, absorbed_props, scores_json, conflict_strategy)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      survivor_props, absorbed_ids, absorbed_props, scores_json, conflict_strategy,
+      decided_by_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.id, record.sessionId, record.mergePassId,
     new Date(record.timestamp).getTime(),
@@ -277,7 +291,8 @@ function writeAuditRecord(
     JSON.stringify(record.absorbedIds),
     JSON.stringify(record.absorbedProperties),
     JSON.stringify(record.scores),
-    record.conflictStrategy
+    record.conflictStrategy,
+    JSON.stringify(record.decidedBy)
   )
   return record
 }

@@ -49,6 +49,7 @@ async function ensureIndexes(driver: Driver): Promise<void> {
 interface PairRow {
   pairId: string
   verdict: string
+  decidedBy: string | null
   decidedAt: string | null
   sessionId: string
   note: string | null
@@ -68,6 +69,7 @@ function toPairRow(pair: CandidatePair): PairRow {
   return {
     pairId: pair.id,
     verdict: pair.verdict,
+    decidedBy: pair.decidedBy ?? null,
     decidedAt: pair.decidedAt ?? null,
     sessionId: pair.sessionId,
     note: pair.note ?? null,
@@ -105,6 +107,7 @@ export async function writePairVerdicts(pairs: CandidatePair[]): Promise<void> {
       `UNWIND $rows AS row
        MERGE (p:ERPair {pairId: row.pairId})
        SET p.verdict = row.verdict,
+           p.decidedBy = row.decidedBy,
            p.decidedAt = row.decidedAt,
            p.sessionId = row.sessionId,
            p.note = row.note
@@ -149,7 +152,9 @@ export async function writeAuditRecord(record: AuditRecord): Promise<void> {
     await session.run(
       `CREATE (r:ERAuditRecord {
          id: $id, sessionId: $sessionId, mergePassId: $mergePassId,
-         timestamp: $timestamp, label: $label, conflictStrategy: $conflictStrategy
+         timestamp: $timestamp, label: $label, conflictStrategy: $conflictStrategy,
+         pairsDecidedByHuman: $byHuman, pairsDecidedByAi: $byAi,
+         pairsDecidedByUnknown: $byUnknown
        })
        WITH r
        MATCH (survivor) WHERE elementId(survivor) = $survivorId
@@ -162,6 +167,9 @@ export async function writeAuditRecord(record: AuditRecord): Promise<void> {
         label: record.label,
         conflictStrategy: record.conflictStrategy,
         survivorId: record.survivorId,
+        byHuman: record.decidedBy?.human ?? 0,
+        byAi: record.decidedBy?.ai ?? 0,
+        byUnknown: record.decidedBy?.unknown ?? 0,
       }
     )
     // Link absorbed nodes

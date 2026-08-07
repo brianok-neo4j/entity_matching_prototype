@@ -717,8 +717,13 @@ export default function ReviewScreen() {
                     <div className="text-xs text-gray-300 truncate">{display}</div>
                     <div className="text-xs text-gray-600 truncate">{displayB}</div>
                   </div>
-                  <span className={`text-xs shrink-0 mt-0.5 ${VERDICT_COLORS[pair.verdict]}`}>
-                    {pair.verdict === 'duplicate' ? '✓' : pair.verdict === 'distinct' ? '✗' : '·'}
+                  <span className="flex items-center gap-1 shrink-0 mt-0.5">
+                    {pair.decidedBy === 'ai' && (
+                      <span className="text-[10px] text-indigo-400" title="Decided by AI">✦</span>
+                    )}
+                    <span className={`text-xs ${VERDICT_COLORS[pair.verdict]}`}>
+                      {pair.verdict === 'duplicate' ? '✓' : pair.verdict === 'distinct' ? '✗' : '·'}
+                    </span>
                   </span>
                 </div>
               </button>
