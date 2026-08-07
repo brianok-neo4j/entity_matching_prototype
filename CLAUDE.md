@@ -102,6 +102,18 @@ useEffect(() => {
 
 **Cancellable async loops** — use a module-level flag (`autoClassifyCancelled`) checked at the top of each loop iteration. Do not try to cancel mid-API-call; let the in-flight request finish, then stop. Return `{ classified, cancelled }` so the renderer can show a partial-result banner.
 
+**Pair ids are session-scoped** — `pairIdFor(sessionId, idA, idB)` in
+`app/src/main/pair-id.ts`. `pairs.id` is the primary key, so an id built from
+the node ids alone is shared by every session comparing those two nodes against
+the same database: the second session's upsert hits `ON CONFLICT`, which does
+not touch `session_id`, so the row stays owned by the first session and
+`listPairs` never returns it. The symptom is a short queue with no error — one
+session showed 4 pairs where its rule surfaced 11. `pair_scores` has the same
+exposure through its `(pair_id, ...)` key, so the later session also overwrote
+the earlier one's scores. `upsertPairs` still recognises the unscoped id within
+the same session so recompute updates pre-scoping rows rather than duplicating
+them; that shim and `legacyPairId` can go once no such session remains.
+
 **Re-run compute** — detected via `session.status === 'reviewing' | 'merges-applied'` in ConfigureScreen. Uses `session.save` instead of `session.create`. The `upsertPairs` SQL uses `ON CONFLICT(id) DO UPDATE SET` but intentionally does **not** overwrite `verdict`, `decided_at`, or `note` — existing verdicts are preserved across recomputes.
 
 **Session status** — the status field must be set explicitly when saving. `ComputeScreen.proceed()` must include `status: 'reviewing'` in the object passed to `session.save`; omitting it silently resets status to the previous value.

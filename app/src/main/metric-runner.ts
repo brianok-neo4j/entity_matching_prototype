@@ -1,5 +1,5 @@
-import { createHash } from 'crypto'
 import { getDriver } from './connection-service'
+import { pairIdFor } from './pair-id'
 import { getMetric } from './metrics/registry'
 import { upsertPairs } from './session-service'
 import { tokenBucketPairs } from './candidate-generator'
@@ -85,7 +85,7 @@ export async function runMetrics(
 
         for (const { idA, idB, score } of rawScores) {
           if (idA === idB) continue
-          const pairId = stablePairId(idA, idB)
+          const pairId = pairIdFor(session.id, idA, idB)
           if (!pairScores.has(pairId)) pairScores.set(pairId, { idA, idB, scores: [] })
           pairScores.get(pairId)!.scores.push({
             metricId: metricConfig.metricId,
@@ -141,11 +141,6 @@ export async function runMetrics(
     // awaiting it would stall the caller after all real work is done.
     neo4jSession.close().catch(() => {})
   }
-}
-
-function stablePairId(idA: string, idB: string): string {
-  const sorted = [idA, idB].sort()
-  return createHash('sha1').update(sorted.join('|')).digest('hex').slice(0, 12)
 }
 
 function surfaced(
@@ -415,7 +410,7 @@ async function surfacedCount(session: Session, nodes: NodeSnapshot[]): Promise<n
       const raw = await metric.computePairScores(records, metricConfig.params, () => {}, signal)
       for (const { idA, idB, score } of raw) {
         if (idA === idB) continue
-        const pairId = stablePairId(idA, idB)
+        const pairId = pairIdFor(session.id, idA, idB)
         if (!pairScores.has(pairId)) pairScores.set(pairId, { idA, idB, scores: [] })
         pairScores.get(pairId)!.scores.push({
           metricId: metricConfig.metricId,
