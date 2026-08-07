@@ -8,6 +8,7 @@ import type {
   MetricConfig,
   SurfacingRule,
   LlmCallRecord,
+  PropertyKind,
 } from '../../../shared/types'
 
 type Step = 'label' | 'fields' | 'surfacing'
@@ -63,15 +64,38 @@ export default function ConfigureScreen() {
 
     setSelectedLabel(labelMeta)
 
-    const draft: DraftField[] = session!.fields.map((fc) => {
-      const propMeta = labelMeta.properties.find((p) => p.name === fc.propertyName)
-      return {
-        propertyName: fc.propertyName,
-        enabled: true,
-        kind: propMeta?.inferredKind ?? 'name',
-        metrics: fc.metrics.map((m) => ({ metricId: m.metricId, params: { ...m.params }, threshold: m.threshold })),
-      }
+    // Show every comparable property, not just the ones the session kept —
+    // otherwise a field deselected on an earlier pass can never be selected again.
+    const saved = new Map(session!.fields.map((fc) => [fc.propertyName, fc]))
+    const fromSaved = (fc: FieldConfig, kind: PropertyKind): DraftField => ({
+      propertyName: fc.propertyName,
+      enabled: true,
+      kind,
+      metrics: fc.metrics.map((m) => ({ metricId: m.metricId, params: { ...m.params }, threshold: m.threshold })),
     })
+
+    const draft: DraftField[] = labelMeta.properties
+      .filter((p) => !SKIP_KINDS.includes(p.inferredKind))
+      .map((p) => {
+        const fc = saved.get(p.name)
+        if (fc) return fromSaved(fc, p.inferredKind)
+        const suggested = suggestMetrics(p.inferredKind)
+        return {
+          propertyName: p.name,
+          enabled: false,
+          kind: p.inferredKind,
+          metrics: suggested.map((m) => ({
+            metricId: m.id,
+            params: { ...m.defaultParams },
+            threshold: m.defaultThreshold,
+          })),
+        }
+      })
+
+    // A saved field the schema no longer reports still has verdicts riding on it.
+    for (const fc of session!.fields) {
+      if (!draft.some((d) => d.propertyName === fc.propertyName)) draft.push(fromSaved(fc, 'name'))
+    }
     setFields(draft)
 
     const sf: Record<string, { threshold: number; weight: number }> = {}
