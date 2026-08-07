@@ -186,10 +186,31 @@ export interface PrefixInput {
   fewShotCount: number
 }
 
-export function buildPrefix(input: PrefixInput): { text: string; fewShotUsed: number } {
+export function buildPrefix(input: PrefixInput): {
+  text: string
+  fewShotUsed: number
+  fewShotHuman: number
+} {
   const { session, labelMeta, allPairs, fewShotCount } = input
   const decided = allPairs.filter((p) => p.verdict !== 'pending')
-  const examples = selectFewShot(decided, fewShotCount)
+
+  // Prefer verdicts a human actually made. Filling the examples with the
+  // classifier's own prior output would calibrate it against itself, so any
+  // early bias compounds run over run instead of being corrected. AI verdicts
+  // are still better than no examples, so they backfill rather than being
+  // excluded — and the prompt below says which it got.
+  const humanDecided = decided.filter((p) => p.decidedBy === 'human')
+  const examples = selectFewShot(humanDecided, fewShotCount)
+  const fewShotHuman = examples.length
+  if (examples.length < fewShotCount) {
+    const chosen = new Set(examples.map((p) => p.id))
+    examples.push(
+      ...selectFewShot(
+        decided.filter((p) => p.decidedBy !== 'human' && !chosen.has(p.id)),
+        fewShotCount - examples.length
+      )
+    )
+  }
 
   const fieldTypes = session.fields
     .map((f) => {
@@ -241,14 +262,22 @@ ${distLines}`)
       })
       .join('\n\n')
 
+    const aiCount = examples.length - fewShotHuman
+    const provenance =
+      aiCount === 0
+        ? 'All of these were decided by the human reviewer working on this exact dataset. Match their standard.'
+        : fewShotHuman === 0
+          ? 'These were decided by an automated classifier on this dataset, not by a human. Treat them as a guide to the conventions in use, not as ground truth — judge each new pair on its own evidence.'
+          : `${fewShotHuman} of these were decided by the human reviewer working on this exact dataset; the remaining ${aiCount} came from an automated classifier and are a weaker signal. Weight the human decisions more heavily.`
+
     sections.push(`## Worked examples from this dataset
 
-These pairs were decided by the human reviewer working on this exact dataset. Match their standard.
+${provenance}
 
 ${exampleBlocks}`)
   }
 
-  return { text: sections.join('\n\n'), fewShotUsed: examples.length }
+  return { text: sections.join('\n\n'), fewShotUsed: examples.length, fewShotHuman }
 }
 
 // ─── Response handling ────────────────────────────────────────────────────────

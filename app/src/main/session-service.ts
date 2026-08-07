@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto'
 import { getDb } from './db'
-import type { Session, CandidatePair, MetricScore, Verdict } from '../shared/types'
+import type { Session, CandidatePair, DecidedBy, MetricScore, Verdict } from '../shared/types'
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
@@ -103,6 +103,7 @@ function rowToPair(row: Record<string, unknown>, scores: MetricScore[]): Candida
     verdict: row.verdict as Verdict,
     decidedAt: row.decided_at ? new Date(row.decided_at as number).toISOString() : undefined,
     note: (row.note as string | null) ?? undefined,
+    decidedBy: (row.decided_by as DecidedBy | null) ?? null,
   }
 }
 
@@ -172,9 +173,17 @@ export function upsertPairs(pairs: CandidatePair[]): void {
   tx()
 }
 
-export function setVerdict(pairId: string, verdict: Verdict): void {
-  getDb().prepare('UPDATE pairs SET verdict = ?, decided_at = ? WHERE id = ?')
-    .run(verdict, verdict !== 'pending' ? Date.now() : null, pairId)
+// decidedBy is required rather than defaulted: every caller should have to say
+// whether a human or the classifier produced the verdict.
+export function setVerdict(pairId: string, verdict: Verdict, decidedBy: DecidedBy): void {
+  getDb()
+    .prepare('UPDATE pairs SET verdict = ?, decided_at = ?, decided_by = ? WHERE id = ?')
+    .run(
+      verdict,
+      verdict !== 'pending' ? Date.now() : null,
+      verdict !== 'pending' ? decidedBy : null,
+      pairId
+    )
 }
 
 export function setNote(pairId: string, note: string): void {

@@ -139,14 +139,15 @@ Off by default. Under **Settings → Neo4j Storage** there are two toggles, the 
 **Write verdicts and audit records** creates, as each pair is decided:
 
 ```
-(:ERPair {pairId, verdict, decidedAt, sessionId, note})
+(:ERPair {pairId, verdict, decidedBy, decidedAt, sessionId, note})
   -[:INVOLVES {role: 'nodeA'|'nodeB'}]-> (the compared nodes)
 ```
 
 and, for each merge pass:
 
 ```
-(:ERAuditRecord {id, sessionId, mergePassId, timestamp, label, conflictStrategy})
+(:ERAuditRecord {id, sessionId, mergePassId, timestamp, label, conflictStrategy,
+                 pairsDecidedByHuman, pairsDecidedByAi, pairsDecidedByUnknown})
   -[:MERGED_INTO]-> (survivor)
   -[:ABSORBED]->    (each absorbed node)
 ```
@@ -170,6 +171,13 @@ MATCH (p:ERPair {verdict: 'distinct'})-[:SCORED]->(s:ERPairScore)
 WHERE s.score > 0.95
 RETURN s.fieldName, s.metricId, count(*) AS pairs
 ORDER BY pairs DESC
+```
+
+Every verdict records **who made it** — `decidedBy` is `human` or `ai` — and each audit record counts how the pairs behind that merge were decided, so you can ask whether a destructive merge rested on human judgement:
+
+```cypher
+MATCH (r:ERAuditRecord) WHERE r.pairsDecidedByHuman = 0
+RETURN r.mergePassId, r.pairsDecidedByAi AS aiDecidedPairs
 ```
 
 ---
