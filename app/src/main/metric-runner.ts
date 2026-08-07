@@ -77,6 +77,7 @@ export async function runMetrics(
         console.log(`[compute] ${metricConfig.metricId} done — ${rawScores.length} pair scores`)
 
         for (const { idA, idB, score } of rawScores) {
+          if (idA === idB) continue
           const pairId = stablePairId(idA, idB)
           if (!pairScores.has(pairId)) pairScores.set(pairId, { idA, idB, scores: [] })
           pairScores.get(pairId)!.scores.push({
