@@ -27,6 +27,11 @@ export async function runMetrics(
   // Node snapshots captured during field fetches — no second round-trip needed
   const snapshotMap = new Map<string, { id: string; properties: Record<string, unknown> }>()
 
+  // Per field, the nodes that actually carry the property. Lets surfacing tell
+  // "the property is absent" apart from "both have it but they scored poorly" —
+  // metrics emit scores sparsely, so a missing score alone means neither.
+  const fieldNodeIds = new Map<string, Set<string>>()
+
   try {
     for (const fieldConfig of session.fields) {
       for (const metricConfig of fieldConfig.metrics) {
@@ -54,6 +59,9 @@ export async function runMetrics(
         return { id, value: r.get('val') }
       })
       console.log(`[compute] ${nodes.length} nodes fetched for ${fieldConfig.propertyName}`)
+      // The query above already filters to nodes that have the property, so this
+      // is the exact set for which the field can be compared at all.
+      fieldNodeIds.set(fieldConfig.propertyName, new Set(nodes.map((n) => n.id)))
 
       for (const metricConfig of fieldConfig.metrics) {
         if (signal.aborted) break
@@ -85,7 +93,8 @@ export async function runMetrics(
     type SurfacedEntry = { pairId: string; idA: string; idB: string; scores: MetricScore[] }
     const surfacedEntries: SurfacedEntry[] = []
     for (const [pairId, { idA, idB, scores }] of pairScores) {
-      if (surfaced(scores, session)) surfacedEntries.push({ pairId, idA, idB, scores })
+      if (surfaced(scores, session, idA, idB, fieldNodeIds))
+        surfacedEntries.push({ pairId, idA, idB, scores })
     }
     console.log(`[compute] ${surfacedEntries.length} pairs surfaced`)
 
@@ -120,7 +129,13 @@ function stablePairId(idA: string, idB: string): string {
   return createHash('sha1').update(sorted.join('|')).digest('hex').slice(0, 12)
 }
 
-function surfaced(scores: MetricScore[], session: Session): boolean {
+function surfaced(
+  scores: MetricScore[],
+  session: Session,
+  idA: string,
+  idB: string,
+  fieldNodeIds: Map<string, Set<string>>
+): boolean {
   const { mode, fields } = session.surfacingRule
 
   // Field score = max across metrics for that field
@@ -128,6 +143,14 @@ function surfaced(scores: MetricScore[], session: Session): boolean {
   for (const score of scores) {
     const current = fieldScores.get(score.fieldName) ?? 0
     fieldScores.set(score.fieldName, Math.max(current, score.score))
+  }
+
+  // A field can only be judged when both nodes carry the property. Absent is
+  // not the same as scoring zero: a pair should not fail a comparison that was
+  // never possible.
+  const comparable = (propertyName: string): boolean => {
+    const ids = fieldNodeIds.get(propertyName)
+    return ids !== undefined && ids.has(idA) && ids.has(idB)
   }
 
   if (mode === 'any') {
@@ -139,11 +162,18 @@ function surfaced(scores: MetricScore[], session: Session): boolean {
   }
 
   if (mode === 'all') {
+    // Every field the pair can actually be compared on must meet its threshold.
+    // Fields one or both nodes lack are skipped rather than counted as a
+    // failure — otherwise sparse data excludes pairs that match on everything
+    // they share. A field both nodes have but that produced no score is still a
+    // failure: that is a real comparison the pair lost.
+    let compared = 0
     for (const fc of fields) {
-      const fs = fieldScores.get(fc.propertyName) ?? 0
-      if (fs < fc.threshold) return false
+      if (!comparable(fc.propertyName)) continue
+      compared++
+      if ((fieldScores.get(fc.propertyName) ?? 0) < fc.threshold) return false
     }
-    return true
+    return compared > 0
   }
 
   // weighted-average

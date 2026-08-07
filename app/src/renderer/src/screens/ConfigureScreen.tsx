@@ -635,13 +635,18 @@ export default function ConfigureScreen() {
               {surfacingMode === 'all' && (
                 <>
                   <p className="text-gray-400">
-                    Surfaces a pair only when <span className="text-gray-300">every</span> field
-                    reaches its threshold.
+                    Surfaces a pair only when <span className="text-gray-300">every comparable</span>{' '}
+                    field reaches its threshold.
                   </p>
-                  <p className="text-amber-500">
-                    A property missing from either node scores 0 and fails its threshold, so the pair
-                    is excluded — however well it matches on everything else. On sparse data this
-                    mode can return very few pairs.
+                  <p>
+                    A field is comparable when both nodes actually carry the property. Fields one or
+                    both nodes are missing are skipped rather than counted as a failure, so a pair is
+                    never rejected for a comparison that was never possible — it is judged on the
+                    fields the two records share.
+                  </p>
+                  <p>
+                    A field both nodes do have still has to meet its threshold. Scoring poorly is a
+                    comparison the pair lost; having nothing to compare is not.
                   </p>
                 </>
               )}
