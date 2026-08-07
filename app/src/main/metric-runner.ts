@@ -195,11 +195,17 @@ function surfaced(
     return compared > 0
   }
 
-  // weighted-average
-  const combined = fields.reduce((sum, fc) => {
+  // weighted-average — divide by the weights actually in play so this is a mean
+  // rather than a sum. Weights drift away from summing to 1 whenever a field is
+  // removed or a slider is dragged, and an unnormalized sum silently rescales
+  // the combined threshold: five fields left holding 1/9 each cap the total at
+  // 0.56, so a 0.85 threshold can never be met however well the pair matches.
+  const totalWeight = fields.reduce((sum, fc) => sum + fc.weight, 0)
+  if (totalWeight <= 0) return false
+  const weighted = fields.reduce((sum, fc) => {
     return sum + fc.weight * (fieldScores.get(fc.propertyName) ?? 0)
   }, 0)
-  return combined >= (session.surfacingRule.combinedThreshold ?? 0.85)
+  return weighted / totalWeight >= (session.surfacingRule.combinedThreshold ?? 0.85)
 }
 
 
