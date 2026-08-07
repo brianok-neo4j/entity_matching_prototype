@@ -2,9 +2,16 @@ import { createHash } from 'crypto'
 import { getDriver } from './connection-service'
 import { getMetric } from './metrics/registry'
 import { upsertPairs } from './session-service'
-import { estimatePairCount } from './candidate-generator'
+import { tokenBucketPairs } from './candidate-generator'
 import { sanitize } from './neo4j-int'
-import type { Session, CandidatePair, MetricScore, ScoreDistributions, ScorePercentiles } from '../shared/types'
+import type {
+  Session,
+  CandidatePair,
+  MetricScore,
+  ScoreDistributions,
+  ScorePercentiles,
+  PairEstimate,
+} from '../shared/types'
 import type { NodeRecord } from './metrics/types'
 
 export type ProgressEvent = {
@@ -23,7 +30,7 @@ export async function runMetrics(
   const neo4jSession = driver.session()
 
   // Map pairId → accumulated scores
-  const pairScores = new Map<string, { idA: string; idB: string; scores: MetricScore[] }>()
+  const pairScores: PairScoreMap = new Map()
   // Node snapshots captured during field fetches — no second round-trip needed
   const snapshotMap = new Map<string, { id: string; properties: Record<string, unknown> }>()
 
@@ -97,44 +104,15 @@ export async function runMetrics(
     // the two nodes both carry. Surfacing cannot tell that apart from a genuine
     // low score, which made All mode reject pairs on comparisons that were
     // never attempted. Ask the metric for the real number instead.
-    let densified = 0
     const tDense = Date.now()
-    for (const { idA, idB, scores } of pairScores.values()) {
-      const propsA = snapshotMap.get(idA)?.properties
-      const propsB = snapshotMap.get(idB)?.properties
-      if (!propsA || !propsB) continue
-      const have = new Set(scores.map((s) => `${s.fieldName}|${s.metricId}`))
-
-      for (const fieldConfig of session.fields) {
-        // properties() omits nulls, so absence here means the node genuinely
-        // lacks the property and there is nothing to compare.
-        const a = propsA[fieldConfig.propertyName]
-        const b = propsB[fieldConfig.propertyName]
-        if (a === undefined || b === undefined) continue
-
-        for (const metricConfig of fieldConfig.metrics) {
-          if (have.has(`${fieldConfig.propertyName}|${metricConfig.metricId}`)) continue
-          const metric = getMetric(metricConfig.metricId)
-          if (!metric.scorePair) continue
-          const score = metric.scorePair(a, b, metricConfig.params)
-          if (score === null) continue
-          scores.push({
-            metricId: metricConfig.metricId,
-            fieldName: fieldConfig.propertyName,
-            score,
-            aboveThreshold: score >= metricConfig.threshold,
-          })
-          densified++
-        }
-      }
-    }
+    const densified = densify(session, pairScores, snapshotMap)
     console.log(`[compute] densify: ${densified} scores filled in ${Date.now() - tDense}ms`)
 
     // Surface pairs using snapshots already in memory — no extra query
     type SurfacedEntry = { pairId: string; idA: string; idB: string; scores: MetricScore[] }
     const surfacedEntries: SurfacedEntry[] = []
-    for (const [pairId, { idA, idB, scores }] of pairScores) {
-      if (surfaced(scores, session, idA, idB, fieldNodeIds))
+    for (const [pairId, { idA, idB, scores, abstained }] of pairScores) {
+      if (surfaced(scores, session, idA, idB, fieldNodeIds, abstained))
         surfacedEntries.push({ pairId, idA, idB, scores })
     }
     console.log(`[compute] ${surfacedEntries.length} pairs surfaced`)
@@ -175,7 +153,8 @@ function surfaced(
   session: Session,
   idA: string,
   idB: string,
-  fieldNodeIds: Map<string, Set<string>>
+  fieldNodeIds: Map<string, Set<string>>,
+  abstained?: Set<string>
 ): boolean {
   const { mode, fields } = session.surfacingRule
 
@@ -188,8 +167,11 @@ function surfaced(
 
   // A field can only be judged when both nodes carry the property. Absent is
   // not the same as scoring zero: a pair should not fail a comparison that was
-  // never possible.
+  // never possible. Both nodes must carry the property, and some metric must have been willing
+  // to score it. A field every metric declined is no more judgeable than one the
+  // nodes do not have.
   const comparable = (propertyName: string): boolean => {
+    if (abstained?.has(propertyName)) return false
     const ids = fieldNodeIds.get(propertyName)
     return ids !== undefined && ids.has(idA) && ids.has(idB)
   }
@@ -217,11 +199,21 @@ function surfaced(
     return compared > 0
   }
 
-  // weighted-average
-  const combined = fields.reduce((sum, fc) => {
+  // weighted-average — divide by the weights actually in play so this is a mean
+  // rather than a sum. Weights drift away from summing to 1 whenever a field is
+  // removed or a slider is dragged, and an unnormalized sum silently rescales
+  // the combined threshold: five fields left holding 1/9 each cap the total at
+  // 0.56, so a 0.85 threshold can never be met however well the pair matches.
+  // A field every metric declined is dropped from both sides of the ratio, so
+  // it neither helps nor hurts. Leaving it only in the denominator would penalise
+  // a pair for a comparison nothing was willing to make.
+  const usable = fields.filter((fc) => !abstained?.has(fc.propertyName))
+  const totalWeight = usable.reduce((sum, fc) => sum + fc.weight, 0)
+  if (totalWeight <= 0) return false
+  const weighted = usable.reduce((sum, fc) => {
     return sum + fc.weight * (fieldScores.get(fc.propertyName) ?? 0)
   }, 0)
-  return combined >= (session.surfacingRule.combinedThreshold ?? 0.85)
+  return weighted / totalWeight >= (session.surfacingRule.combinedThreshold ?? 0.85)
 }
 
 
@@ -266,6 +258,190 @@ function computeDistributions(
   return { all: toPercentiles(allScores), pending: toPercentiles(pendingScores) }
 }
 
-export function estimatePairs(_session: Session, nodes: { id: string; value: string }[]): number {
-  return estimatePairCount(nodes)
+type PairEntry = { idA: string; idB: string; scores: MetricScore[]; abstained?: Set<string> }
+type PairScoreMap = Map<string, PairEntry>
+type NodeSnapshot = { id: string; properties: Record<string, unknown> }
+
+// Fills in the scores candidate generation never produced, for every field the
+// two nodes both carry. Returns how many it added.
+//
+// Also records fields where both nodes have the property but no metric would
+// produce a number — a metric can decline a comparison it cannot make well, as
+// edit distance does below its minimum length. That is not the pair losing a
+// comparison, so surfacing must not read it as one.
+function densify(session: Session, pairScores: PairScoreMap, snapshots: Map<string, NodeSnapshot>): number {
+  let densified = 0
+  for (const entry of pairScores.values()) {
+    const { idA, idB, scores } = entry
+    const propsA = snapshots.get(idA)?.properties
+    const propsB = snapshots.get(idB)?.properties
+    if (!propsA || !propsB) continue
+    const have = new Set(scores.map((s) => `${s.fieldName}|${s.metricId}`))
+    const scoredFields = new Set(scores.map((s) => s.fieldName))
+
+    for (const fieldConfig of session.fields) {
+      // properties() omits nulls, so absence here means the node genuinely
+      // lacks the property and there is nothing to compare.
+      const a = propsA[fieldConfig.propertyName]
+      const b = propsB[fieldConfig.propertyName]
+      if (a === undefined || b === undefined) continue
+
+      for (const metricConfig of fieldConfig.metrics) {
+        if (have.has(`${fieldConfig.propertyName}|${metricConfig.metricId}`)) continue
+        const metric = getMetric(metricConfig.metricId)
+        if (!metric.scorePair) continue
+        const score = metric.scorePair(a, b, metricConfig.params)
+        if (score === null) continue
+        scores.push({
+          metricId: metricConfig.metricId,
+          fieldName: fieldConfig.propertyName,
+          score,
+          aboveThreshold: score >= metricConfig.threshold,
+        })
+        scoredFields.add(fieldConfig.propertyName)
+        densified++
+      }
+
+      if (!scoredFields.has(fieldConfig.propertyName)) {
+        if (!entry.abstained) entry.abstained = new Set()
+        entry.abstained.add(fieldConfig.propertyName)
+      }
+    }
+  }
+  return densified
+}
+
+// Above this many candidate pairs the estimate switches from exact to sampled.
+const EXACT_CANDIDATE_LIMIT = 50_000
+
+const pairCount = (n: number): number => (n * (n - 1)) / 2
+
+/**
+ * Counts the pairs the session's surfacing rule would actually surface.
+ *
+ * Runs the real pipeline — candidate generation, densification, and the same
+ * `surfaced()` the compute pass uses — so All and Weighted Average are answered
+ * on real scores rather than on bucket counts. Since densification means every
+ * mode considers the same candidate union, there is no cheaper way to tell the
+ * modes apart than to score them.
+ *
+ * On labels too large to score in full, a stride sample of nodes is scored and
+ * the result scaled by C(N,2)/C(n,2) — unbiased in expectation, because a pair
+ * survives sampling exactly when both its nodes do.
+ */
+export async function estimateSurfacedPairs(session: Session): Promise<PairEstimate> {
+  const driver = getDriver()
+  const neo4jSession = driver.session()
+  try {
+    // One scan for the whole label. Per-field queries would give each field its
+    // own row set, and ids from different fields cannot be compared.
+    const result = await neo4jSession.run(
+      `MATCH (n:\`${session.label}\`) RETURN elementId(n) AS id, properties(n) AS props`
+    )
+    const all: NodeSnapshot[] = result.records.map((r) => {
+      const raw = (r.get('props') ?? {}) as Record<string, unknown>
+      const properties: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(raw)) properties[k] = sanitize(v)
+      return { id: r.get('id') as string, properties }
+    })
+    if (all.length < 2) return { count: 0, exact: true, candidates: 0 }
+
+    const candidates = countCandidates(session, all)
+    let sample = all
+    if (candidates > EXACT_CANDIDATE_LIMIT) {
+      // Candidates grow with the square of node count, so scale the node sample
+      // by the square root of how far over the limit we are.
+      const target = Math.floor(all.length * Math.sqrt(EXACT_CANDIDATE_LIMIT / candidates))
+      sample = strideSample(all, Math.max(2, target))
+    }
+
+    const count = await surfacedCount(session, sample)
+    if (sample.length === all.length) return { count, exact: true, candidates }
+
+    const scale = pairCount(all.length) / pairCount(sample.length)
+    return {
+      count: Math.round(count * scale),
+      exact: false,
+      candidates,
+      sampledNodes: sample.length,
+      totalNodes: all.length,
+    }
+  } finally {
+    neo4jSession.close().catch(() => {})
+  }
+}
+
+// Upper bound on how many pairs the pipeline would score, used only to decide
+// whether to sample. Semantic cosine scores every pair, so it dominates when present.
+function countCandidates(session: Session, nodes: NodeSnapshot[]): number {
+  let semanticMax = 0
+  const union = new Set<string>()
+
+  for (const fieldConfig of session.fields) {
+    const present = nodes.filter((n) => n.properties[fieldConfig.propertyName] !== undefined)
+    if (present.length < 2) continue
+
+    if (fieldConfig.metrics.some((m) => m.metricId === 'semantic-cosine')) {
+      semanticMax = Math.max(semanticMax, pairCount(present.length))
+      continue
+    }
+    const strings = present.map((n) => ({
+      id: n.id,
+      value: String(n.properties[fieldConfig.propertyName]),
+    }))
+    for (const [a, b] of tokenBucketPairs(strings)) union.add(`${a}|${b}`)
+  }
+  return Math.max(union.size, semanticMax)
+}
+
+async function surfacedCount(session: Session, nodes: NodeSnapshot[]): Promise<number> {
+  const snapshots = new Map(nodes.map((n) => [n.id, n]))
+  const fieldNodeIds = new Map<string, Set<string>>()
+  const pairScores: PairScoreMap = new Map()
+  const signal = new AbortController().signal
+
+  for (const fieldConfig of session.fields) {
+    const present = nodes.filter((n) => n.properties[fieldConfig.propertyName] !== undefined)
+    fieldNodeIds.set(fieldConfig.propertyName, new Set(present.map((n) => n.id)))
+    if (present.length < 2) continue
+
+    const records: NodeRecord[] = present.map((n) => ({
+      id: n.id,
+      value: n.properties[fieldConfig.propertyName],
+    }))
+
+    for (const metricConfig of fieldConfig.metrics) {
+      const metric = getMetric(metricConfig.metricId)
+      const raw = await metric.computePairScores(records, metricConfig.params, () => {}, signal)
+      for (const { idA, idB, score } of raw) {
+        if (idA === idB) continue
+        const pairId = stablePairId(idA, idB)
+        if (!pairScores.has(pairId)) pairScores.set(pairId, { idA, idB, scores: [] })
+        pairScores.get(pairId)!.scores.push({
+          metricId: metricConfig.metricId,
+          fieldName: fieldConfig.propertyName,
+          score,
+          aboveThreshold: score >= metricConfig.threshold,
+        })
+      }
+    }
+  }
+
+  densify(session, pairScores, snapshots)
+
+  let count = 0
+  for (const { idA, idB, scores, abstained } of pairScores.values()) {
+    if (surfaced(scores, session, idA, idB, fieldNodeIds, abstained)) count++
+  }
+  return count
+}
+
+// Evenly spaced rather than random, so clicking Recalculate twice on unchanged
+// data gives the same number.
+function strideSample<T>(items: T[], target: number): T[] {
+  if (target >= items.length) return items
+  const stride = items.length / target
+  const out: T[] = []
+  for (let i = 0; i < target; i++) out.push(items[Math.floor(i * stride)])
+  return out
 }

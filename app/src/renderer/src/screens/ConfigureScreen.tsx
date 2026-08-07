@@ -9,6 +9,7 @@ import type {
   SurfacingRule,
   LlmCallRecord,
   PropertyKind,
+  PairEstimate,
 } from '../../../shared/types'
 
 type Step = 'label' | 'fields' | 'surfacing'
@@ -36,7 +37,7 @@ export default function ConfigureScreen() {
   const [surfacingMode, setSurfacingMode] = useState<'any' | 'all' | 'weighted-average'>('any')
   const [fieldSurfacing, setFieldSurfacing] = useState<Record<string, { threshold: number; weight: number }>>({})
   const [combinedThreshold, setCombinedThreshold] = useState(0.85)
-  const [estimate, setEstimate] = useState<number | null>(null)
+  const [estimate, setEstimate] = useState<PairEstimate | null>(null)
   const [estimating, setEstimating] = useState(false)
   const [creating, setCreating] = useState(false)
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null)
@@ -46,6 +47,7 @@ export default function ConfigureScreen() {
   const [aiCall, setAiCall] = useState<LlmCallRecord | null>(null)
 
   const hasApiKey = Boolean(settings?.anthropicApiKey)
+  const weightTotal = Object.values(fieldSurfacing).reduce((sum, cfg) => sum + cfg.weight, 0)
 
   useEffect(() => {
     const off = window.api.usage.onCall((record) => {
@@ -186,11 +188,18 @@ export default function ConfigureScreen() {
       addToast('Enable at least one field with a metric', 'error')
       return
     }
-    // Normalize weights to sum to 1
-    const w = 1 / enabled.length
+    // Rescale the weights of the surviving fields back to a sum of 1, keeping
+    // their relative sizes. Carrying stale weights forward is what let a session
+    // end up with five fields at 1/9 each, whose total could never reach the
+    // combined threshold.
+    const priorTotal = enabled.reduce((sum, f) => sum + (fieldSurfacing[f.propertyName]?.weight ?? 0), 0)
     const sf: Record<string, { threshold: number; weight: number }> = {}
     for (const f of enabled) {
-      sf[f.propertyName] = fieldSurfacing[f.propertyName] ?? { threshold: 0.8, weight: w }
+      const cfg = fieldSurfacing[f.propertyName]
+      sf[f.propertyName] = {
+        threshold: cfg?.threshold ?? 0.8,
+        weight: cfg && priorTotal > 0 ? cfg.weight / priorTotal : 1 / enabled.length,
+      }
     }
     setFieldSurfacing(sf)
     setStep('surfacing')
@@ -204,10 +213,10 @@ export default function ConfigureScreen() {
       // We need a temp session ID to estimate; create a temp draft session
       const draft = buildSessionPartial()
       const session = await window.api.session.create(draft)
-      const count = await window.api.schema.estimatePairs(session.id)
+      const result = await window.api.schema.estimatePairs(session.id)
       // Clean up: delete the temp session
       await window.api.session.delete(session.id)
-      setEstimate(count)
+      setEstimate(result)
     } catch (err) {
       addToast(`Estimate failed: ${(err as Error).message}`, 'error')
     } finally {
@@ -685,6 +694,10 @@ export default function ConfigureScreen() {
                     A missing property contributes 0 to the sum rather than excluding the pair, so a
                     strong showing on the remaining fields can still surface it.
                   </p>
+                  <p>
+                    Weights are relative — they are divided by their total, so only their sizes
+                    against each other matter, not what they add up to.
+                  </p>
                 </>
               )}
             </div>
@@ -733,6 +746,9 @@ export default function ConfigureScreen() {
                           className="w-24"
                         />
                         <span className="w-10 text-white">{cfg.weight.toFixed(2)}</span>
+                        <span className="w-14 text-right text-gray-500">
+                          {weightTotal > 0 ? `${Math.round((cfg.weight / weightTotal) * 100)}%` : '—'}
+                        </span>
                       </label>
                     )}
                   </div>
@@ -763,7 +779,15 @@ export default function ConfigureScreen() {
               </button>
               {estimate !== null && (
                 <span className="text-sm text-gray-400">
-                  ≈ <span className="text-white font-medium">{estimate.toLocaleString()}</span> candidate pairs
+                  {estimate.exact ? '' : '≈ '}
+                  <span className="text-white font-medium">{estimate.count.toLocaleString()}</span>{' '}
+                  {estimate.count === 1 ? 'pair' : 'pairs'} surfaced by this rule
+                  {!estimate.exact && (
+                    <span className="text-gray-500">
+                      {' '}— sampled {estimate.sampledNodes?.toLocaleString()} of{' '}
+                      {estimate.totalNodes?.toLocaleString()} nodes
+                    </span>
+                  )}
                 </span>
               )}
               <div className="flex-1" />

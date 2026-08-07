@@ -138,6 +138,11 @@ function migrate(db: Database.Database): void {
   }
 
   addColumn(db, 'audit_records', 'decided_by_json', `TEXT NOT NULL DEFAULT '{}'`)
+
+  // The OpenAI semantic-cosine backend is gone, so nothing reads this setting.
+  // It was stored in plaintext, unlike Neo4j passwords, so drop the row rather
+  // than leaving a live key sitting in the database no code will ever use.
+  db.prepare(`DELETE FROM settings WHERE key = 'openaiApiKey'`).run()
 }
 
 // CREATE TABLE IF NOT EXISTS won't add a column to a table that already exists,

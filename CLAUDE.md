@@ -39,6 +39,13 @@ Single Zustand store at `app/src/renderer/src/store/index.ts`. Screen navigation
 2. Register it in `app/src/main/metrics/registry.ts`.
 3. Add its UI definition to `app/src/renderer/src/lib/metrics.ts`.
 
+A metric's parameters are declared in two places — `paramSchema` in the renderer
+definition, and `params.x` reads in the implementation — and nothing at runtime
+connects them. Every param read ends in `?? default`, so a mismatch produces no
+error, just a control that silently does nothing. Four had drifted before
+`npm run check:params` existed; it runs as the first step of `npm run build` and
+fails on a key declared but never read, or read but never declared.
+
 ### LLM usage, cost, and estimation
 
 Every Claude call in the app is ledgered. Three call sites exist — auto-classify

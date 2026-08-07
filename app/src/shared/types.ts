@@ -162,6 +162,15 @@ export interface ScoreDistributions {
   pending: ScorePercentiles[]
 }
 
+export interface PairEstimate {
+  count: number
+  // False when the count came from a node sample rather than the whole label.
+  exact: boolean
+  candidates: number
+  sampledNodes?: number
+  totalNodes?: number
+}
+
 // ─── Merge ───────────────────────────────────────────────────────────────────
 
 export interface MergeGroup {
@@ -183,7 +192,6 @@ export interface MergeApplyResult {
 
 export interface AppSettings {
   anthropicApiKey: string
-  openaiApiKey: string
   assistantModel: string
   excludedLabels: string[]
   theme: 'light' | 'dark' | 'system'

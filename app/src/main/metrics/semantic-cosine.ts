@@ -1,12 +1,23 @@
 import type { MetricModule, NodeRecord, PairScore } from './types'
 
-// Cached pipeline — loading the ONNX model is expensive; reuse across calls.
-let bgeExtractor: Awaited<ReturnType<typeof import('@huggingface/transformers').pipeline>> | null = null
+// `pipeline()` is typed as a union of every pipeline class, and those classes'
+// call signatures do not unify — calling the result is a type error however the
+// task string is written. Narrow to the one shape this file uses.
+type BGEExtractor = (
+  texts: string[],
+  options: { pooling: 'mean'; normalize: boolean }
+) => Promise<{ data: Float32Array; dims: number[] }>
 
-async function getBGE() {
+// Cached pipeline — loading the ONNX model is expensive; reuse across calls.
+let bgeExtractor: BGEExtractor | null = null
+
+async function getBGE(): Promise<BGEExtractor> {
   if (!bgeExtractor) {
     const { pipeline } = await import('@huggingface/transformers')
-    bgeExtractor = await pipeline('feature-extraction', 'Xenova/bge-base-en-v1.5')
+    bgeExtractor = (await pipeline(
+      'feature-extraction',
+      'Xenova/bge-base-en-v1.5'
+    )) as unknown as BGEExtractor
   }
   return bgeExtractor
 }
@@ -21,7 +32,7 @@ async function encodeBGE(strings: string[], onProgress?: (pct: number) => void):
 
   for (let i = 0; i < truncated.length; i += BGE_BATCH_SIZE) {
     const batch = truncated.slice(i, i + BGE_BATCH_SIZE)
-    const output = await extractor(batch, { pooling: 'mean', normalize: true }) as { data: Float32Array; dims: number[] }
+    const output = await extractor(batch, { pooling: 'mean', normalize: true })
     const dim = output.dims[1]
     for (let j = 0; j < batch.length; j++) {
       results.push(Array.from(output.data.slice(j * dim, (j + 1) * dim)))
@@ -29,16 +40,6 @@ async function encodeBGE(strings: string[], onProgress?: (pct: number) => void):
     onProgress?.((i + batch.length) / truncated.length)
   }
   return results
-}
-
-async function encodeOpenAI(strings: string[], apiKey: string, model: string): Promise<number[][]> {
-  const res = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ input: strings, model }),
-  })
-  const json = await res.json() as { data: { embedding: number[] }[] }
-  return json.data.map((d) => d.embedding)
 }
 
 function dot(a: number[], b: number[]): number {
@@ -61,31 +62,26 @@ export const semanticCosine: MetricModule = {
   description: 'Dense embedding cosine similarity. Captures semantic equivalence.',
   applicableTo: ['name', 'text'],
   defaultThreshold: 0.88,
-  defaultParams: { embeddingModel: 'bge-base-en' },
+  defaultParams: { backend: 'bge', embeddingProperty: '' },
 
   async computePairScores(nodes, params, onProgress, signal) {
-    const model = (params.embeddingModel as string) ?? 'bge-base-en'
+    const backend = (params.backend as string) ?? 'bge'
     const valid = nodes.filter((n) => typeof n.value === 'string' && n.value.trim()) as (NodeRecord & { value: string })[]
     if (valid.length === 0) return []
 
     let vecs: number[][]
-    if (model === 'bge-base-en') {
-      vecs = await encodeBGE(valid.map((n) => n.value), (pct) => onProgress(pct * 0.9))
-    } else if (model.startsWith('openai-')) {
-      const apiKey = (params.openaiApiKey as string) ?? ''
-      const modelName = model === 'openai-text-embedding-3-small'
-        ? 'text-embedding-3-small'
-        : 'text-embedding-3-large'
-      vecs = await encodeOpenAI(valid.map((n) => n.value), apiKey, modelName)
-    } else if (model === 'neo4j-stored') {
-      const propName = (params.embeddingProperty as string) ?? 'embedding'
+    if (backend === 'neo4j-property' || backend === 'neo4j-stored') {
+      const propName = (params.embeddingProperty as string) || 'embedding'
       vecs = valid.map((n) => {
         const props = n as unknown as { properties?: Record<string, unknown> }
         const emb = props.properties?.[propName]
         return Array.isArray(emb) ? (emb as number[]) : []
       })
     } else {
-      throw new Error(`Unknown embedding model: ${model}`)
+      // Includes a legacy `openai` value. That backend was never reachable —
+      // the engine read a key the UI never wrote — so those sessions were
+      // already embedding with BGE. Falling back keeps their scores identical.
+      vecs = await encodeBGE(valid.map((n) => n.value), (pct) => onProgress(pct * 0.9))
     }
 
     if (signal?.aborted) return []

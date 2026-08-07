@@ -48,16 +48,22 @@ The practical consequence is worth stating plainly. If you configure a session w
 
 | Metric | Best for | Configurable params |
 |---|---|---|
-| Exact Match | Identifiers, codes | — |
+| Exact Match | Identifiers, codes | Normalization |
 | Edit Distance (Levenshtein ratio) | Short names, IDs | Min string length |
 | Jaro-Winkler | Person/place names | Prefix weight |
 | Token Jaccard | Multi-word names, text | Tokenization mode |
 | Token Sort Ratio | Names with word reordering | Tokenization mode |
 | Phonetic (Double Metaphone) | Names with spelling variants | — |
 | Numeric Proximity | Year, age, quantity fields | — |
-| Semantic Cosine | Long text, descriptions | Backend: BGE (in-process), OpenAI API, or neo4j-stored vector |
+| Semantic Cosine | Long text, descriptions | Backend: BGE (in-process) or a vector already stored on the node |
 
 Candidate pairs are generated with a **token-bucket** approach (O(n × tokens), not O(n²)), so the tool stays fast even on large label sets.
+
+**Exact Match and `Normalization`.** `nfkd-lower-strip` (the default) lowercases, applies Unicode NFKD, and replaces every non-alphanumeric character with a space before collapsing runs of whitespace. So `St. Louis` matches `St Louis` and `Reagan-National` matches `Reagan National`, but `Zürich` does not match `Zurich` — NFKD splits the umlaut into a combining mark, which is then replaced by a space. `none` compares the raw strings, so even `USA` and `usa` differ.
+
+**Edit Distance and `Min string length`.** The Levenshtein ratio is a step function of length: on a four-character value one edit costs a flat 0.25, on a two-character value it costs 0.5. Below a few characters the score reports length more than similarity, so the metric **declines to score** a pair where either value is shorter than `Min string length` (default 3) rather than returning a number no threshold can use sensibly.
+
+Declining is not failing. A field where every configured metric declined is skipped by All mode and dropped from both sides of the weighted-average ratio, exactly as a property neither node carries would be — so putting Edit Distance on a two-character field such as a US state code costs you that field, not your whole queue.
 
 ---
 
@@ -67,7 +73,7 @@ Controls which scored pairs enter the review queue:
 
 - **Any field** — surface if any field score meets its threshold
 - **All fields** — surface only if every field *the two nodes can be compared on* meets its threshold
-- **Weighted average** — surface if the weighted sum of field scores meets a combined threshold
+- **Weighted average** — surface if the weighted *mean* of field scores meets a combined threshold
 
 The pair count estimate on the Configure screen shows the approximate queue size before you commit to running compute.
 
@@ -77,7 +83,9 @@ Nodes in the same label rarely carry the same properties. All mode therefore jud
 
 This matters more than it sounds, because a *missing score* and a *low score* are not the same thing. Metrics emit scores sparsely — the token-bucket pass only produces a score for records sharing a token — so an absent score cannot be read as a failure. Before applying the rule, the tool asks each metric directly for any score it needs and doesn't have, whenever both nodes carry the property. All mode is judged on real numbers, never on inferred failure.
 
-Any mode is unaffected: it needs one field to clear its threshold, so absences are irrelevant. **Weighted average treats a missing field as a score of 0**, which pushes the weighted sum down and can hold back a pair that matched well on everything it could be compared on.
+Any mode is unaffected: it needs one field to clear its threshold, so absences are irrelevant. **Weighted average treats a missing field as a score of 0**, which pulls the mean down and can hold back a pair that matched well on everything it could be compared on. A field that is absent on most nodes is therefore a poor choice of weighted-average input.
+
+Weights are **relative**. They are divided by their own total before the comparison, so what matters is their sizes against each other, not what they add up to — `0.5/0.5` and `0.1/0.1` behave identically. This division is what keeps the combined threshold meaningful: weights stop summing to 1 as soon as a field is removed or a slider is dragged, and comparing an unnormalized sum against a fixed threshold silently rescales it. Five fields still holding `1/9` each cap their total at `0.56`, so a `0.85` threshold could never be met no matter how well a pair matched.
 
 ---
 
@@ -232,7 +240,6 @@ Open **Settings** from the top nav bar.
 | Setting | Description |
 |---|---|
 | Anthropic API Key | Powers three features: the assistant panel (chatbot), **AI Auto-classify** (bulk pair verdicts), and **AI field/metric suggestion** on the Configure screen. |
-| OpenAI API Key | Required only when using the OpenAI semantic-cosine backend. |
 | Assistant Model | Powers the assistant, auto-classify, and field suggestions. Defaults to `claude-sonnet-5`. The list is generated from the pricing table, so every selectable model shows its current per-million-token rates. |
 | AI Auto-classify | Pairs per request (default 20), worked examples drawn from your own verdicts (default 20), requests in parallel (default 4), and whether the shared prompt prefix is cached. |
 | Token Pricing | Per-million-token input and output rates used to cost every Claude call. Ships with current rates; edit one if it changes, or reset to the bundled values. |

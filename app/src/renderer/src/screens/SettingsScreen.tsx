@@ -20,7 +20,6 @@ export default function SettingsScreen() {
   const { setScreen, addToast, setSettings, connection } = useStore()
   const [form, setForm] = useState<AppSettings>({
     anthropicApiKey: '',
-    openaiApiKey: '',
     assistantModel: DEFAULT_ASSISTANT_MODEL,
     excludedLabels: ['__Entity__', '__KGBuilder__', 'Document', 'Chunk', '_Bloom_Perspective_', '_Bloom_Scene_'],
     theme: 'dark',
@@ -162,17 +161,6 @@ export default function SettingsScreen() {
               onChange={f('anthropicApiKey')}
             />
             <p className="text-xs text-gray-600 mt-1">Used for the assistant panel (Claude).</p>
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">OpenAI API Key</label>
-            <input
-              type="password"
-              className="input"
-              placeholder="sk-…"
-              value={form.openaiApiKey}
-              onChange={f('openaiApiKey')}
-            />
-            <p className="text-xs text-gray-600 mt-1">Required only for the OpenAI semantic-cosine backend.</p>
           </div>
         </section>
 

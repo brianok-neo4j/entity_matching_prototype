@@ -7,10 +7,9 @@ import * as schema from './schema-service'
 import * as sessions from './session-service'
 import * as mergeExec from './merge-executor'
 import * as assistant from './assistant-service'
-import { runMetrics } from './metric-runner'
+import { runMetrics, estimateSurfacedPairs } from './metric-runner'
 import { getSettings, setSettings } from './settings-service'
 import { getDb } from './db'
-import { estimatePairCount } from './candidate-generator'
 import * as neo4jStorage from './neo4j-storage'
 import { toJsNumber } from './neo4j-int'
 import * as usage from './usage-service'
@@ -295,22 +294,8 @@ function registerIpc() {
   ipcMain.handle(IPC.SCHEMA_DISCOVER, () => schema.discoverSchema())
   ipcMain.handle(IPC.SCHEMA_ESTIMATE_PAIRS, async (_, sessionId: string) => {
     const session = sessions.loadSession(sessionId)
-    if (!session) return 0
-    const driver = connection.getDriver()
-    const neo4jSession = driver.session()
-    try {
-      let total = 0
-      for (const field of session.fields) {
-        const result = await neo4jSession.run(
-          `MATCH (n:\`${session.label}\`) WHERE n.\`${field.propertyName}\` IS NOT NULL RETURN n.\`${field.propertyName}\` AS val`
-        )
-        const nodes = result.records.map((r, i) => ({ id: String(i), value: String(r.get('val')) }))
-        total = Math.max(total, estimatePairCount(nodes))
-      }
-      return total
-    } finally {
-      await neo4jSession.close()
-    }
+    if (!session) return { count: 0, exact: true, candidates: 0 }
+    return estimateSurfacedPairs(session)
   })
 
   // Sessions

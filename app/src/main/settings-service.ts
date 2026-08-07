@@ -10,7 +10,6 @@ import type { AppSettings } from '../shared/types'
 
 const DEFAULTS: AppSettings = {
   anthropicApiKey: '',
-  openaiApiKey: '',
   assistantModel: DEFAULT_ASSISTANT_MODEL,
   excludedLabels: ['__Entity__', '__KGBuilder__', 'Document', 'Chunk', '_Bloom_Perspective_', '_Bloom_Scene_'],
   theme: 'system',
