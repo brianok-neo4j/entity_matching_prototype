@@ -66,10 +66,18 @@ Candidate pairs are generated with a **token-bucket** approach (O(n × tokens), 
 Controls which scored pairs enter the review queue:
 
 - **Any field** — surface if any field score meets its threshold
-- **All fields** — surface only if every field score meets its threshold
+- **All fields** — surface only if every field *the two nodes can be compared on* meets its threshold
 - **Weighted average** — surface if the weighted sum of field scores meets a combined threshold
 
 The pair count estimate on the Configure screen shows the approximate queue size before you commit to running compute.
+
+### Missing properties, and why All is worded that way
+
+Nodes in the same label rarely carry the same properties. All mode therefore judges a pair on the fields **both** nodes actually have, and ignores the rest — a record missing `airport_id` is compared on the fields it does have rather than being excluded outright. A pair with no comparable field in common never surfaces.
+
+This matters more than it sounds, because a *missing score* and a *low score* are not the same thing. Metrics emit scores sparsely — the token-bucket pass only produces a score for records sharing a token — so an absent score cannot be read as a failure. Before applying the rule, the tool asks each metric directly for any score it needs and doesn't have, whenever both nodes carry the property. All mode is judged on real numbers, never on inferred failure.
+
+Any mode is unaffected: it needs one field to clear its threshold, so absences are irrelevant. **Weighted average treats a missing field as a score of 0**, which pushes the weighted sum down and can hold back a pair that matched well on everything it could be compared on.
 
 ---
 
