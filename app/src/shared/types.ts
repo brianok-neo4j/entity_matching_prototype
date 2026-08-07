@@ -192,7 +192,6 @@ export interface MergeApplyResult {
 
 export interface AppSettings {
   anthropicApiKey: string
-  openaiApiKey: string
   assistantModel: string
   excludedLabels: string[]
   theme: 'light' | 'dark' | 'system'

@@ -7,11 +7,11 @@ export const tokenJaccard: MetricModule = {
   description: '|intersection| / |union| of token sets. Order-insensitive.',
   applicableTo: ['name', 'text'],
   defaultThreshold: 0.70,
-  defaultParams: { tokenizer: 'whitespace-lowercase' },
+  defaultParams: { tokenMode: 'whitespace-lowercase', tokenizer: 'whitespace-lowercase' },
 
   scorePair(a, b, params) {
     if (typeof a !== 'string' || typeof b !== 'string') return null
-    const mode = (params.tokenizer as string) ?? 'whitespace-lowercase'
+    const mode = (params.tokenMode as string) ?? 'whitespace-lowercase'
     const ta = new Set(tokenize(a, mode))
     const tb = new Set(tokenize(b, mode))
     let inter = 0
@@ -21,7 +21,7 @@ export const tokenJaccard: MetricModule = {
   },
 
   async computePairScores(nodes, params, onProgress, signal) {
-    const mode = (params.tokenizer as string) ?? 'whitespace-lowercase'
+    const mode = (params.tokenMode as string) ?? 'whitespace-lowercase'
     const tokenized = nodes
       .map((n) => ({
         id: n.id,

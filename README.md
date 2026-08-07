@@ -48,16 +48,18 @@ The practical consequence is worth stating plainly. If you configure a session w
 
 | Metric | Best for | Configurable params |
 |---|---|---|
-| Exact Match | Identifiers, codes | — |
+| Exact Match | Identifiers, codes | Normalization |
 | Edit Distance (Levenshtein ratio) | Short names, IDs | Min string length |
 | Jaro-Winkler | Person/place names | Prefix weight |
 | Token Jaccard | Multi-word names, text | Tokenization mode |
 | Token Sort Ratio | Names with word reordering | Tokenization mode |
 | Phonetic (Double Metaphone) | Names with spelling variants | — |
 | Numeric Proximity | Year, age, quantity fields | — |
-| Semantic Cosine | Long text, descriptions | Backend: BGE (in-process), OpenAI API, or neo4j-stored vector |
+| Semantic Cosine | Long text, descriptions | Backend: BGE (in-process) or a vector already stored on the node |
 
 Candidate pairs are generated with a **token-bucket** approach (O(n × tokens), not O(n²)), so the tool stays fast even on large label sets.
+
+**Exact Match and `Normalization`.** `nfkd-lower-strip` (the default) lowercases, applies Unicode NFKD, and replaces every non-alphanumeric character with a space before collapsing runs of whitespace. So `St. Louis` matches `St Louis` and `Reagan-National` matches `Reagan National`, but `Zürich` does not match `Zurich` — NFKD splits the umlaut into a combining mark, which is then replaced by a space. `none` compares the raw strings, so even `USA` and `usa` differ.
 
 **Edit Distance and `Min string length`.** The Levenshtein ratio is a step function of length: on a four-character value one edit costs a flat 0.25, on a two-character value it costs 0.5. Below a few characters the score reports length more than similarity, so the metric **declines to score** a pair where either value is shorter than `Min string length` (default 3) rather than returning a number no threshold can use sensibly.
 
@@ -238,7 +240,6 @@ Open **Settings** from the top nav bar.
 | Setting | Description |
 |---|---|
 | Anthropic API Key | Powers three features: the assistant panel (chatbot), **AI Auto-classify** (bulk pair verdicts), and **AI field/metric suggestion** on the Configure screen. |
-| OpenAI API Key | Required only when using the OpenAI semantic-cosine backend. |
 | Assistant Model | Powers the assistant, auto-classify, and field suggestions. Defaults to `claude-sonnet-5`. The list is generated from the pricing table, so every selectable model shows its current per-million-token rates. |
 | AI Auto-classify | Pairs per request (default 20), worked examples drawn from your own verdicts (default 20), requests in parallel (default 4), and whether the shared prompt prefix is cached. |
 | Token Pricing | Per-million-token input and output rates used to cost every Claude call. Ships with current rates; edit one if it changes, or reset to the bundled values. |

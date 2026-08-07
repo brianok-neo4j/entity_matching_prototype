@@ -26,7 +26,10 @@ export const METRICS: MetricDef[] = [
     description: 'Normalized exact string equality (case-insensitive)',
     applicableTo: ['name', 'identifier', 'text'],
     defaultThreshold: 1.0,
-    defaultParams: {},
+    defaultParams: { normalization: 'nfkd-lower-strip' },
+    paramSchema: {
+      normalization: { type: 'select', label: 'Normalization', options: ['nfkd-lower-strip', 'none'] },
+    },
   },
   {
     id: 'edit-distance',
@@ -91,12 +94,12 @@ export const METRICS: MetricDef[] = [
   {
     id: 'semantic-cosine',
     displayName: 'Semantic Cosine',
-    description: 'Cosine similarity of sentence embeddings (BGE, OpenAI, or stored property)',
+    description: 'Cosine similarity of sentence embeddings (BGE in-process, or a stored vector property)',
     applicableTo: ['name', 'text'],
     defaultThreshold: 0.92,
     defaultParams: { backend: 'bge', embeddingProperty: '' },
     paramSchema: {
-      backend: { type: 'select', label: 'Backend', options: ['bge', 'openai', 'neo4j-property'] },
+      backend: { type: 'select', label: 'Backend', options: ['bge', 'neo4j-property'] },
       embeddingProperty: { type: 'string', label: 'Embedding property (neo4j-property only)' },
     },
   },

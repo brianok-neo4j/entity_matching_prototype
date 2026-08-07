@@ -26,20 +26,22 @@ export const tokenSortRatio: MetricModule = {
   description: 'Sorts tokens alphabetically then computes sequence ratio. Order-insensitive.',
   applicableTo: ['name'],
   defaultThreshold: 0.85,
-  defaultParams: {},
+  defaultParams: { tokenMode: 'whitespace-lowercase' },
 
-  scorePair(a, b) {
+  scorePair(a, b, params) {
     if (typeof a !== 'string' || typeof b !== 'string') return null
-    const norm = (v: string): string => tokenize(v, 'whitespace-lowercase').sort().join(' ')
+    const mode = (params.tokenMode as string) ?? 'whitespace-lowercase'
+    const norm = (v: string): string => tokenize(v, mode).sort().join(' ')
     return sequenceRatio(norm(a), norm(b))
   },
 
-  async computePairScores(nodes, _params, onProgress, signal) {
+  async computePairScores(nodes, params, onProgress, signal) {
+    const mode = (params.tokenMode as string) ?? 'whitespace-lowercase'
     const sorted = nodes
       .map((n) => ({
         id: n.id,
         val: typeof n.value === 'string'
-          ? tokenize(n.value, 'whitespace-lowercase').sort().join(' ')
+          ? tokenize(n.value, mode).sort().join(' ')
           : null,
       }))
       .filter((n): n is { id: string; val: string } => n.val !== null)
