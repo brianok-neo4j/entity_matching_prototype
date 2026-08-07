@@ -15,6 +15,7 @@ const DEFAULTS: AppSettings = {
   excludedLabels: ['__Entity__', '__KGBuilder__', 'Document', 'Chunk', '_Bloom_Perspective_', '_Bloom_Scene_'],
   theme: 'system',
   useNeo4jStorage: false,
+  useNeo4jPairScores: false,
   pricingOverrides: {},
   classifyBatchSize: DEFAULT_CLASSIFY_BATCH_SIZE,
   classifyFewShotCount: DEFAULT_CLASSIFY_FEW_SHOT_COUNT,

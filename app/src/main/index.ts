@@ -570,13 +570,21 @@ function registerIpc() {
           tagToPairId
         )
 
+        const written: CandidatePair[] = []
         for (const r of results) {
           const note = `[AI] ${r.reason}`
           sessions.setVerdict(r.pairId, r.verdict)
           sessions.setNote(r.pairId, note)
           classified++
           decided.set(r.pairId, { verdict: r.verdict, note })
+          const pair = batch.find((p) => p.id === r.pairId)
+          if (pair) written.push({ ...pair, verdict: r.verdict, note })
         }
+
+        // Batched, and best-effort: a Neo4j write must never fail a verdict
+        // already committed to SQLite. Writing per pair here would open a
+        // session per pair and exhaust the driver pool under concurrency.
+        if (written.length > 0) neo4jStorage.writePairVerdicts(written).catch(() => {})
 
         const unresolvedIds = new Set(
           unresolvedTags.map((t) => tagToPairId.get(t)).filter((id): id is string => Boolean(id))
